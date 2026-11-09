@@ -24970,6 +24970,25 @@ if ('serviceWorker' in navigator) {
 window.addEventListener('load', () => {
 navigator.serviceWorker.register('./sw.js').then((reg) => {
 reg.addEventListener('updatefound', () => {});
+/* 私人七改补丁（2026-11-10）：手机「怎么做都不刷新」的根因之一——原来注册完就不管了，
+   浏览器的 SW 更新检查大约一天才跑一次，用户推了新 sw.js 手机上照样用旧缓存。
+   这里改成：①页面每次回到前台/每小时主动 reg.update() 一次；
+   ②发现新 SW 装好并接管后，自动 reload 一次让用户拿到新版（只 reload 一次，防循环）。 */
+try {
+if (reg.update) { try { reg.update(); } catch (e) {} setInterval(() => { try { reg.update(); } catch (e) {} }, 60 * 60 * 1000); }
+} catch (e) {}
+let _swReloaded = false;
+try {
+navigator.serviceWorker.addEventListener('controllerchange', () => {
+if (_swReloaded) return;
+_swReloaded = true;
+try { location.reload(); } catch (e) {}
+});
+} catch (e) {}
+document.addEventListener('visibilitychange', () => {
+if (document.visibilityState !== 'visible') return;
+try { if (reg.update) reg.update(); } catch (e) {}
+});
 }).catch(() => {});
 });
 }
