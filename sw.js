@@ -1,12 +1,14 @@
-// ===== Mochi Service Worker：离线缓存 + 网络优先 =====
+﻿// ===== Mochi Service Worker：离线缓存 + 网络优先 =====
 // v3.5.54：CACHE 名由 build.mjs 每次构建自动更新（mochi-<时间戳>），
-// 新版本部署后旧缓存自动失效 → 强制更新到最新版
+// 新版本部署后旧缓存自动失效 → 强制更新到最新版。
 // v3.6.x：网络优先 + 超时兜底。GitHub Pages 在国内网络经常慢/卡，原实现
 // fetch/addAll 均无超时——SW 卡在 installing 时 Chrome 安卓「安装到桌面」
 // 会一直显示「正在安装」永不完成（WebAPK 安装要经 SW 拉 start_url/图标）。
 // 现在每个请求最多等 NETWORK_TIMEOUT 毫秒，超时立即回退缓存（没缓存则快速
 // 失败），SW 最迟约 10 秒内必然激活，安装/加载都不再无限挂起。
-const CACHE = 'mochi-vd8m4q3g';
+// 注意：本文件必须保存为 UTF-8。2026-11-09 曾因编码写坏导致注释乱码、行尾
+// 注释吞掉下一行代码，这里按原逻辑重写了一遍，行为不变。
+const CACHE = 'mochi-vd8m4q3j';
 const BUILD_INFO = '部署于 2026-11-06 17:30';
 const PRECACHE = ["./","./index.html","./manifest.json","./icon-192.png","./icon-512.png","./icon-180.png","./js/idb.js","./js/contacts.js","./js/applock.js","./js/card-lock.js","./js/dcp-master.js","./js/media-pool.js","./js/storage-slim.js","./js/perf-check.js","./js/energy-check.js","./js/flash-check.js","./js/img-compress.js","./js/img-ingest.js","./js/lock.js","./js/clock.js","./js/entry-quiz.js","./js/entry-rules.js","./js/tabs.js","./js/desktop-slider.js","./js/quote-cards.js","./js/personalize.js","./js/chat.js","./js/group-chat.js","./js/chatcard.js","./js/chat-settings.js","./js/reply-settings.js","./js/fav-settings.js","./js/default-cards-data.js","./js/dict-ext-data.js","./js/default-cards.js","./js/quote-spell.js","./js/dream-free.js","./js/mood-followup-data.js","./js/mood-reply-cards.js","./js/ta-mood-data.js","./js/ta-mood.js","./js/fav-reason-data.js","./js/fav-reason.js","./js/music-push.js","./js/willing.js","./js/music-player.js","./js/chat-draw.js","./js/chat-card-draw.js","./js/chat-listen.js","./js/room-skin.js","./js/watch-room.js","./js/read-room.js","./js/xinxun.js","./js/world-sense.js","./js/ta-voice.js","./js/sleep-channel.js","./js/vendor/pinyin-pro.min.js","./js/ta-typing.js","./js/calendar.js","./js/milk-divination-data.js","./js/divination.js","./js/ta-status.js","./js/avatar-lib.js","./js/ta-ask.js","./js/ck-question.js","./js/incoming-requests.js","./js/ta-invite.js","./js/bg-keep.js","./js/records.js","./js/call.js","./js/mail.js","./js/feed.js","./js/loc-lib.js","./js/p2-features.js","./js/gift-shop.js","./js/memo-app.js","./js/memo-arc.js","./js/my-arc.js","./js/period.js","./js/accounting.js","./js/garden.js","./js/room.js","./js/drift-bottle.js","./js/decision.js","./js/group-decision.js","./js/pong.js","./js/snake-game.js","./js/breakout.js","./js/connect-four.js","./js/coop-mine.js","./js/fishing.js","./js/memory-game.js","./js/gomoku.js","./js/linkup.js","./js/match3.js","./js/auction.js","./js/arcade.js","./js/mood-diary.js","./js/sfx.js","./js/fullscreen.js","./js/data-backup.js","./js/github-sync.js","./js/feature-data.js","./js/update-remind.js","./js/cjian.js","./js/feature-hub.js","./js/settings-help.js","./js/onboarding.js","./js/page-coach.js","./js/card-audit.js","./js/storage-guide.js","./js/mobile-adapt.js"];
 // v3.10.x：网络优先超时从 8000 → 3500ms。GitHub Pages 国内访问经常 >8s，
@@ -14,11 +16,11 @@ const PRECACHE = ["./","./index.html","./manifest.json","./icon-192.png","./icon
 // 看不到新版。缩短到 3.5s：慢网络下页面秒开（回退缓存），配合页面版本检测 +
 // PRECACHE_NOW 预取机制，用户点「刷新使用新版」时能真正拿到最新版。
 const NETWORK_TIMEOUT = 3500; // 网络请求等待上限（毫秒）
-// v3.26.x #157：index.html 专属超时（30s）。产物 index.html 已 4MB+，国内访问 GitHub
-// Pages 3.5s 内根本传不完 → 安卓 Chrome 桌面快捷方式（standalone）每次启动都走导航
+// v3.26.x #157：index.html 专属超时（30s）。产物 index.html 已 4MB+，国内访问
+// GitHub Pages 3.5s 内根本传不完 → 安卓 Chrome 桌面快捷方式（standalone）每次启动都走导航
 // 网络优先 → 必然超时回退缓存；预缓存/补拉/PRECACHE_NOW 全部 3.5s 失败 → 新缓存常年
 // 缺 index、更新永远刷不上，表现为「快捷方式要刷新很多次才能打开甚至打不开」（小米
-// 15Pro+Chrome 等多机型反馈，浏览器标签页因有 HTTP 缓存不明显）。index 下载单独给
+// 15Pro+Chrome 等机型反馈，浏览器标签页因有 HTTP 缓存不明显）。index 下载单独给
 // 长超时，小资源仍走 3.5s 快速回退。
 const INDEX_NETWORK_TIMEOUT = 30000;
 
@@ -34,12 +36,12 @@ function fetchWithTimeout(req, ms) {
 }
 
 // #942：index 更新通道的慢路径兜底——install 预缓存 / activate 补拉 / PRECACHE_NOW
-// （「刷新使用新版」落盘通道）/ 导航后台静默刷新四条通道此前都只给 30s 长超时：实测 ~30KB/s
-// 的网络（GitHub Pages 国内访问，vivo/小米现场）传完 1.4~4MB 需要 50~130s，30s 必然超时＝
-// 四条通道全灭，用户点了「刷新使用新版」也照样收到回执后重载回旧缓存，表现为「刷新很多次
+// （「刷新使用新版」落盘通道） 导航后台静默刷新四条通道此前都只给 30s 长超时：实测 ~30KB/s
+// 的网络（GitHub Pages 国内访问，vivo/小米现场）传完 1.4~4MB 需要 50~130s，30s 必然超时，
+// 四条通道全灭，用户点了「刷新使用新版」也照样收到回放后重载回旧缓存，表现为「刷新很多次
 // 也停在旧版」。修法＝超时/失败后补一发不带超时的 fetch 慢慢传完（SW 内部 fetch 不会再被
 // 本 SW 拦截，无死循环；#143 无缓存兜底已验证同形态可用），成功体照旧过调用方已有的
-// isCompleteHtml 完整性校验才允许落缓存。一次就成功的快路径零变化。
+// isCompleteHtml 完整性校验才允许落缓存。
 function fetchIndexRes(url, ms) {
   return fetchWithTimeout(url, ms).catch(() => fetch(url));
 }
@@ -56,17 +58,17 @@ function cacheVersion(name) {
   return 0;
 }
 
-// v3.26.x #134：index.html 完整性校验——iPhone X (iOS 16.7 Safari 主屏幕) 等机型
-// 反复出现「桌面图标/小组件缺失 + 决策等功能没了 + html 类为空」（#87 旧版图标缺失同族）。
+// v3.26.x #134：index.html 完整性校验——iPhone X (iOS 16.7 Safari 主屏等) 等机型
+// 反复出现「桌面图标 / 小组件缺失 + 决策等功能没有 + html 类型为空」（#87 旧版图标缺失同族）。
 // 根因：产物 index.html 约 3.6MB、尾部是第 6/7 号脚本块（决策/全屏/移动适配/pwa 更新器），
-// 弱网/切换网络时响应被中途截断，fetch 仍返回 ok → 截断体被当成功写进缓存/放行给页面；
+// 弱网/切换网络时响应被中途截断，fetch 仍返回 ok → 截断体被当成成功写进缓存，放行给页面；
 // 尾部脚本块整体丢失且 HTML 解析不报错（启动文件异常=无），页面失去自愈能力
 // （pwa.js 更新器也在尾部块里）。此后每次导航回退都命中这份残缺缓存 → 反复发作。
 // 防线：任何 index.html 进缓存前必须通过 isCompleteHtml 校验（含 EOF 标记，由
 // build.mjs 写在产物最尾部 + template.html 末尾锚点元素双保险），截断体一律丢弃。
 // 注意：模板注释/说明里也会出现 __MOCHI_EOF__ 字样，但它们在 <style>/<body> 前部，
 // 末尾截断必然同时丢掉「文档最末字节处的带版本号兜底标记」，故校验用带 buildStamp
-// 的完整形式 `<!-- __MOCHI_EOF__ <stamp> -->`，与正文里的说明文字不混淆。
+// 的完整形态 `<!-- __MOCHI_EOF__ <stamp> -->`，与正文里的说明文字不混淆。
 const HTML_EOF_MARKER = '__MOCHI_EOF__';
 const HTML_EOF_STAMPED = /<!-- __MOCHI_EOF__ [a-z0-9]+ -->/;
 // 只对导航文档做校验（./ / ./index.html / 任何以 index.html 结尾的请求）
@@ -83,15 +85,15 @@ self.addEventListener('install', (e) => {
   self.skipWaiting();
   // 预缓存逐文件超时 + 单文件失败不影响整体：网络再差也保证 SW 能激活，
   // 不阻塞浏览器安装流程。
-  // #860（PERF-PLAN 阶段 1b）：PRECACHE 从 41 项涨到 85 项（6 静态 + 79 外置 js），
-  // 一波全并发会把弱网首装的连接池打满、install 期整体超时 → 新缓存打空。改分波
+  // #860（PERF-PLAN 阶段 1b）：PRECACHE 从 41 项扩到 105 项（6 静态 + 99 外置 js），
+  // 一波全并发会把弱网首装的连接池打满、install 期整体超时 → 新缓存打空。改成分波
   // （每波 12 个并发、波间串行）：单文件失败仍不连坐整体，弱网下稳步推进。
   e.waitUntil(
     (async () => {
       const c = await caches.open(CACHE);
       for (let i = 0; i < PRECACHE.length; i += 12) {
         await Promise.allSettled(PRECACHE.slice(i, i + 12).map((url) =>
-          // v3.26.x #157：index.html 用长超时（4MB 在慢网络 3.5s 必然失败 → 新缓存常年缺 index）
+          // v3.26.x #157：index.html 用长超时；4MB 在慢网络 3.5s 必然失败 → 新缓存常年缺 index。
           fetchIndexRes(url, isIndexUrl(url) ? INDEX_NETWORK_TIMEOUT : NETWORK_TIMEOUT).then((res) => {
             if (res && res.ok) {
               // v3.26.x #134：index.html 完整性校验——截断体不进缓存（下同）
@@ -120,7 +122,7 @@ self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys().then((keys) => {
       const oldKeys = keys.filter((k) => k !== CACHE);
-      // v3.26.x #136：删旧缓存前先「抢救」一份最新的完整 index.html——弱网/被墙下
+      // v3.26.x #136：删旧缓存前先「抢救」一份最新的完整 index.html——弱网/被杀掉
       // install 预缓存可能全超时、activate 网络补拉也可能超时，新缓存缺 index 时离线
       // 导航兜底落空 → Chrome 错误页。从旧缓存按版本新→旧找第一份带 EOF 标记的完整
       // index 先救出来，激活后缺 index 时用它顶上（旧但完整 >> 错误页），网络可用再
@@ -153,7 +155,7 @@ self.addEventListener('activate', (e) => {
         .then((rescued) => {
           // v3.27.x：precache 失败时当前 CACHE 可能没 index.html，导航回退会命中旧缓存旧版
           // → 用户"退回旧版白屏"（iOS PWA 切后台回前台 WebKit 重新加载 + 网络超时回退）。
-          // claim 后异步补一次 fetch 写入当前 CACHE（不阻塞，失败有旧缓存兜底），
+          // claim 后异步补一次 fetch 写入当前 CACHE（不阻塞，失败有旧缓存兜底）；
           // 下次导航回退优先命中当前 CACHE（新版），不再退回旧版。
           return caches.open(CACHE).then((c) => c.match('./index.html')).then((hit) => {
             if (hit) {
@@ -186,9 +188,9 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('message', (e) => {
   const data = e.data || {};
-  // v3.26.x #134：页面启动自检发现「脚本块丢失/文档截断」时发 PURGE_INDEX——
+  // v3.26.x #134：页面启动自检发现「脚本块丢失/文档截断」时会发 PURGE_INDEX——
   // 删掉当前缓存里的 index.html（残缺体），下次导航必然回源拿完整文档。
-  // 回执 PURGE_DONE 让页面知道可以安全重载（避免重载后仍命中同一份残缺缓存）。
+  // 回放 PURGE_DONE 让页面知道可以安全重载（避免重载后仍命中同一份残缺缓存）。
   if (data.type === 'PURGE_INDEX') {
     caches.keys().then((keys) => Promise.all(keys.map((k) =>
       caches.open(k).then((c) => c.delete('./index.html').catch(() => {}))
@@ -205,7 +207,7 @@ self.addEventListener('message', (e) => {
   caches.open(CACHE).then((c) =>
     Promise.allSettled(urls.map((u) =>
       // v3.26.x #157：index.html 用长超时——PRECACHE_NOW 是「刷新使用新版」的落盘通道，
-      // 3.5s 对 4MB 产物必然失败 → 用户点刷新永远拿不到新版、反复刷新
+      // 3.5s 对 4MB 产物必然失败 → 用户点刷新永远拿不到新版、反复刷新。
       fetchIndexRes(u, isIndexUrl(u) ? INDEX_NETWORK_TIMEOUT : NETWORK_TIMEOUT).then((res) => {
         if (res && res.ok) {
           // v3.26.x #134：PRECACHE_NOW 是「刷新使用新版」的落盘通道，同样校验，
@@ -241,33 +243,33 @@ self.addEventListener('fetch', (e) => {
   // 版本检测才真正可靠。notice.json（开屏公告）同理。
   const u = new URL(req.url);
   if (u.pathname.endsWith('/version.json') || u.pathname.endsWith('/notice.json')) return;
-  // FIX 2026-09-10 #280 刷新黑屏卡顿收口①（华为畅享20Pro+Edge 等多机型「刷新黑屏卡顿几分钟」）：
-  // 媒体池令牌渲染解析失败/未完成时 img.src 短暂（或失败路径下长期）保持 '@@m:<hash>' 裸令牌，
-  // 浏览器把它当相对路径解析成同源 URL 发真实网络请求（诊断实证 资源加载失败 …/mochi/@@m:<md5>）。
-  // GitHub Pages 国内弱网下每个都要挂 30s~几分钟才失败（#202 失败占位要等 error 事件才能上），
+  // FIX 2026-09-10 #280 刷新黑屏卡顿收口④（华为畅享20Pro+Edge 等机型「刷新黑屏卡顿几分钟」）：
+  // 媒体池令牌渲染解析失败/未完成时 img.src 暂时（或失败路径下长期）保持 '@@m:<hash>' 裸令牌，
+  // 浏览器把它当相对路径解析成同源 URL 发真实网络请求（诊断实证 资源加载失败 — mochi/@@m:<md5>）。
+  // GitHub Pages 国内弱网下每个都要挂 30s~几分钟才失败（202 失败占位要等 error 事件才能上），
   // 还挤占同源并发连接拖累 version.json/notice.json 等正常资源。这类路径永远不可能是真实资源
   // （令牌只是内部引用，真数据在 IDB xy-home-v2:media:<hash>），本地立即 404：error 毫秒级
-  // 触发、失败占位即时显示、网络零占用；池读取成功场景照旧由 media-pool 观察器改写 src，
+  // 触发、失败占位即时显示、网络零占用；池读取成功场景照旧由 media-pool 观察器改回 src，
   // 被取消的这条 404 无任何副作用。
   if (u.pathname.indexOf('@@m:') >= 0) {
     e.respondWith(Promise.resolve(new Response('', { status: 404, statusText: 'media token (not a network resource)' })));
     return;
   }
-  // #802 外置功能包（js/*.js）：缓存优先 + 后台静默刷新——与 #157 导航同构。外置化后 35 个
+  // #802 外置功能包（js/*.js）：缓存优先 + 后台静默刷新——与 #157 导航同构。外置化后
   // 功能文件每次加载都走「网络优先 3.5s」，弱网（GitHub Pages 国内常态）下每个文件都要白等
   // 3.5s 超时才轮到缓存/重试＝功能面板成片「加载失败」、半死几十秒。改缓存命中立即返回
   // （秒开、离线也在），后台用 3.5s 拉最新写缓存保新鲜（文件名不带 hash：换血靠每次构建新
-  // CACHE 名 + 新 SW 预缓存，代内后台刷新与 #157 的 index 同一代价）；未命中（首装预缓存
+  // CACHE 名 + 新 SW 预缓存，代价同后台刷新＝#157 的 index 同一代价）；未命中（首装预缓存
   // 缺文件）保持原网络优先 3.5s → 自身/全局缓存 → 无超时重试链不变。
   if (/\/js\/[a-zA-Z0-9._-]+\.js$/.test(u.pathname)) {
-    // #1035（iQOO+Edge 实报「功能包未加载成功」永挂；与机型无关）：页面裸址三波重注入仍失败后
-    // 改发「换址」请求（?mb=<会话戳>.<次数> ＋ cache:'reload'，绕开任何按 URL 生效的坏缓存）。
+    // #1035（iQOO+Edge 实报「功能包未加载成功」永挂；与机型无关）：页面裸地址三波重注入仍失败后
+    // 改发「换址」请求（?mb=<会话戳>.<次数> ，cache:'reload'，绕开任何按 URL 生效的坏缓存）。
     // 这类请求按 query 键必然缓存未命中＝真走网络，取回的好字节**写回裸路径键**——带 query 的键
     // 下次没人再请求（戳一次一变），只有落裸键才能让修好的包下次开页直接命中、离线也在。
     const healKey = /[?&]mb=/.test(u.search) ? u.pathname : req;
     // 写缓存前先验「这确实是一份 js」：门户/代理习惯把错误页配成 200 + text/html 塞回来。
     // #1035 之后裸键成了换址逃生写回的目标，一旦让 HTML 进缓存＝下次开页直接命中坏体，
-    // 脚本在 parse 期就死、连 onerror 都不触发（页面侧 __mochiExtFail 记不到＝比 404 更难自愈），
+    // 脚本在 parse 期就死、连 onerror 都不触发（页面侧 __mochiExtFail 记不到——比 404 更难自愈），
     // 所以「写」这一侧必须自己把关（缓存命中后的后台刷新同一条闸，否则它照样能污染好条目）。
     const isJsBody = (res) => !!res && res.ok && !/text\/html/i.test(String((res.headers && res.headers.get('content-type')) || ''));
     const cachePut = (res) => {
@@ -283,8 +285,8 @@ self.addEventListener('fetch', (e) => {
           e.waitUntil(fetchWithTimeout(req, NETWORK_TIMEOUT).then(cachePut).catch(() => {}));
           return m;
         }
-        // #1035：未命中时的两条链（3.5s 内成功／超时后补的那一发）都过 cachePut——以前弱网首访
-        // 「其实传完了」的那一发不写缓存＝下次开页还得再赌一次网络，好字节白拿。
+        // #1035：未命中时的两条链（3.5s 内成功／超时后补的那一发）都过 cachePut——以前弱网首装
+        // 「其实传完了」的那一发不写缓存，下次开页还得再赌一次网络，好字节白扔。
         return fetchWithTimeout(req, NETWORK_TIMEOUT).then(cachePut, () =>
           caches.match(req).then((m2) => m2 || fetch(req).then(cachePut)));
       })
@@ -292,14 +294,14 @@ self.addEventListener('fetch', (e) => {
     return;
   }
   // v3.26.x #157：导航请求改「缓存优先 + 后台静默刷新」——standalone 桌面快捷方式每次
-  // 启动都是一条导航请求，原「网络优先 3.5s」对 4MB 产物在国内网络必然超时回退缓存：
-  // 每次打开先白等 3.5s、预缓存/更新通道全失败 → 「要刷新很多次才能打开甚至打不开」。
+  // 启动都是一条导航请求，原「网络优先 3.5s」对 4MB 产物在国内网络必然超时回退缓存，
+  // 每次打开先白等 3.5s、预缓存/更新通道全失败 →「要刷新很多次才能打开甚至打不开」。
   // 有完整 HTML 缓存时立即返回（秒开，弱网增益最大），同时后台用 index 长超时拉最新
   // 完整体写缓存（静默保持新鲜，配合页面版本条「刷新使用新版」）；无缓存（首装/被清/
   // 污染）才落到下方原网络优先兜底链。
   const navCached = req.mode === 'navigate'
     ? caches.open(CACHE).then((c) => c.match('./index.html')).then((m) => m || caches.match(req)).then((m) => {
-        // #143 同款 content-type 守卫：历史 PNG 污染条目当未命中，落回网络兜底链
+        // #143 同款 content-type 守卫：历史 PNG 污染条目在未命中，落回网络兜底链
         if (m && !/text\/html/i.test(String((m.headers && m.headers.get('content-type')) || 'text/html'))) m = null;
         if (!m) return null;
         e.waitUntil(
@@ -324,8 +326,8 @@ self.addEventListener('fetch', (e) => {
     navCached.then((hit) => hit || fetchWithTimeout(req, NETWORK_TIMEOUT)
       .then((res) => {
         if (res && res.ok) {
-          // v3.26.x #134：导航文档写缓存前校验完整性——网络中途截断的响应（弱网/
-          // 切网时连接被掐，fetch 仍 ok）绝不允许进缓存；残缺体放行给页面会丢尾部
+          // v3.26.x #134：导航文档写缓存前校验完整性——网络中途中截断的响应（弱网/
+          // 切网时连接被掐，fetch 仍是 ok）绝不允许进缓存；残缺体放行给页面会丢尾部
           // 脚本块（决策/全屏/移动适配/pwa 更新器全灭）且不报错。截断时改走缓存
           // 兜底（下方 catch 分支），缓存也没有就透传截断响应（至少本次能渲染，
           // 但不会污染缓存，下次导航自动重试完整下载）。
@@ -333,9 +335,9 @@ self.addEventListener('fetch', (e) => {
             return res.clone().text().then((t) => {
               if (isCompleteHtml(t)) {
                 // v3.26.x #136：导航成功统一写 canonical './index.html' 键——原写 req.url 键
-                // （如 .../mochi/），而离线兜底只 match('./index.html')（= .../mochi/index.html），
-                // 键不一致时缓存里明明有完整 index 也兜不住 → 网络不可达（GitHub Pages 被
-                // 墙/超时，vivo+Chrome #136 现场实测 version.json 拉取失败）时导航兜底落空，
+                // （如 .../mochi/），而离线兜底只 match('./index.html')（即 .../mochi/index.html），
+                // 键不一致时缓存里明明有完整 index 也兜不住 → 网络不可达（GitHub Pages 被杀/
+                // 增 超时，vivo+Chrome #136 现场实测 version.json 拉取失败）时导航兜底落空，
                 // Chrome 错误页顶头就是站点 mochi 字母图标，用户看到「单独 mochi 字母图、进不去」。
                 caches.open(CACHE).then((c) => c.put('./index.html', res.clone()));
                 return res;
@@ -353,7 +355,7 @@ self.addEventListener('fetch', (e) => {
         // 只回退自身缓存，绝不用 HTML 顶替——否则安装/更新流程会拿到错误内容
         const fallback = req.mode === 'navigate'
           // v3.26.x #136：canonical 键 miss 后补一枪 caches.match(req)——旧版 SW 把导航
-          // 成功体写进 req.url 键（存量设备缓存里只有这个键），second chance 接住它们，
+          // 成功体写过 req.url 键（存量设备缓存里只有这个键），second chance 接住它们；
           // 否则老缓存有完整 index 也照样回源 → 离线错误页
           ? caches.open(CACHE).then((c) => c.match('./index.html')).then((m) => m || caches.match(req)).then((m) => m || caches.keys().then((keys) => {
               // v3.7.x：主缓存无 index.html（precache 失败 / activate 保留了旧缓存兜底），
@@ -368,17 +370,16 @@ self.addEventListener('fetch', (e) => {
             }))
           : caches.match(req);
         return fallback.then((m) => {
-          // v3.27.x：缓存也没有时不再直接 Response.error()（白屏）——
-          // iOS 15 反馈「开屏一直自己刷新然后白屏，完全打不开」：GitHub Pages 国内
+          // v3.27.x：缓存也没有时不再直接 Response.error()（白屏）——iOS 15 反馈「开屏一直自己刷新然后白屏，完全打不开」：GitHub Pages 国内
           // 慢网络（实测 ~30KB/s）下网络优先 3.5s 必然超时，若预缓存又失败/旧缓存被清，
           // 导航回退命中空缓存 → Response.error() → 白屏，用户刷新后同样超时 → 看似
           // 「一直自己刷新」。兜底改为再发一次不带超时的网络请求（SW 内部 fetch 不会
           // 再次触发本 SW 拦截，无死循环风险）：慢就慢，等 GitHub Pages 慢慢传完，成功
           // 后照常写入缓存，后续刷新走缓存秒开；只有网络真正不可达才由浏览器报错页。
           // FIX 2026-09-03 #143：导航命中先验 content-type——历史版本曾把任何成功体（含
-          // icon-512.png 图标）一律写进 canonical './index.html' 键（见下方重试写点），
+          // icon-512.png 图标）一律写过 canonical './index.html' 键（见下方重试写点），
           // PNG 占位后离线导航第一级 match 就命中图片 = 浏览器把 PNG 当文档渲染，整页
-          // 只有一张 mochi 字母图（一加Ace2+Edge 实测，#136 vivo 家族复发）；且图片文档
+          // 只有一张 mochi 字母图（一加Ace2+Edge 实测，136 vivo 家族复发）；且图片文档
           // 不跑任何 JS，#134 完整性自检在图片页上无法触发，用户卡死到网络恢复为止。
           // 非 HTML 缓存一律当未命中处理，放行去后面的旧缓存扫描/网络重试（仅导航做此
           // 校验，图标等资源的自身缓存回退不受影响）。
@@ -391,7 +392,7 @@ self.addEventListener('fetch', (e) => {
               // 原实现把任何成功体一律写 canonical './index.html' 键且不过完整性校验，
               // 双漏洞：① icon-512.png 写进 index 键 = 上述「整页 mochi 字母图」根因；
               // ② 截断 HTML 绕过 #134 铁律（该路径是四处写缓存点之外漏挂校验的第 5 处）。
-              // 现仅导航请求才写 canonical 键，且必须过 isCompleteHtml；非导航资源只
+              // 现仅对导航请求才写 canonical 键，且必须过 isCompleteHtml；非导航资源只
               // 透传不落盘（图标缓存由主成功路径按自身键写入，绝不污染 index 键）。
               return res.clone().text().then((t) => {
                 if (!isCompleteHtml(t)) return res;
@@ -409,15 +410,15 @@ self.addEventListener('fetch', (e) => {
 });
 
 // v3.5.114：移除「页面通知 → 清缓存 + 强制 reload」机制。
-// 旧逻辑会让用户刚进入桌面就被打断刷新回开屏（每次构建 sw.js 内容都变，更新频繁时必现）。
-// 现在新 sw 安装即 skipWaiting 接管，activate 自动清理旧缓存，当前页面继续可用，
+// 旧逻辑会让用户刚进入桌面就被打断刷回开屏（每次构建 sw.js 内容都变，更新频繁时必现）。
+// 现在新 sw 安装即 skipWaiting 接管，activate 自动清理旧缓存，当前页面继续可用；
 // 用户下次刷新自然加载最新版；旧页面发来的 UPDATE_READY 消息在此一律忽略。
 
-// ===== v3.15.x：离线消息提醒（Periodic Background Sync，零后端） =====
+// ===== v3.15.x：离线消息提醒（Periodic Background Sync，零后端）=====
 // 页面端（bg-keep.js psync 段）把可发文案快照写入 IDB 根键 xy-home-v2:psync-snap，
-// 并注册 periodicsync。页面全关后浏览器按自身策略定期唤醒本 SW：读快照 → 随机抽
+// 并注册 periodicsync。页面全关后浏览器按自身策略定期唤醒本 SW：读快照 → 随机挑
 // 一条 → 弹系统通知，同时把该条追加进 xy-home-v2:psync-queue；用户回开应用后由
-// 页面端 drainPsyncQueue 安全补投递进聊天（走 chatAddIn 内存链路，绝不直写 chat-msgs）。
+// 页面端 drainPsyncQueue 安全补投递进聊天（走 chatAddIn 内存链路，绝不直接写 chat-msgs）。
 // 如实边界（设置页状态行同步展示）：仅 Chromium 系支持且需 PWA 添加到桌面；调度
 // 频率由浏览器决定（通常数小时~一天一次，非精确闹钟）；浏览器进程被系统杀死后
 // 无法唤醒——那需要真推送服务端，本项目纯本地架构暂不引入。
@@ -426,7 +427,6 @@ const PSYNC_SNAP_KEY = 'xy-home-v2:psync-snap';
 const PSYNC_QUEUE_KEY = 'xy-home-v2:psync-queue';
 const PSYNC_TAG = 'mochi-ta-msg';
 const PSYNC_SNAP_TTL = 7 * 24 * 60 * 60 * 1000; // 快照 7 天未刷新（长期没开应用）不再打扰
-
 function psyncOpenDb() {
   return new Promise(function (resolve, reject) {
     var req = indexedDB.open('mochi-db', 1);
@@ -488,8 +488,8 @@ self.addEventListener('notificationclick', function (e) {
   e.notification.close();
   const tag = (e.notification && e.notification.tag) || '';
   e.waitUntil((async function () {
-    // FIX 2026-09-29 #1443e：页面可能已被系统回收（iPhone 12 Pro 主屏幕模式同机实测回收 26 次），
-    //   这一发 postMessage 就落在「页面还没挂上 message 监听」的空档里＝点了通知没下文。故点击侧同时
+    // FIX 2026-09-29 #1443e：页面可能已被系统回收（iPhone 12 Pro 主屏幕模式同机实测回收 26 次）：
+    //   这一发 postMessage 就落在「页面还没挂上 message 监听」的空档里＝点通知没下文。故点击侧同时
     //   把 tag 写进 IDB 那份小账，页面开机后自取一次（只认 3 分钟内的）。
     if (tag) { try { await psyncIdbSet('xy-home-v2:__notify-click', JSON.stringify({ tag: tag, ts: Date.now() })); } catch (x0) {} }
     const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });

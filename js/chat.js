@@ -11242,6 +11242,15 @@ return (idx0 >= 0 && msgs[idx0]) ? { idx: idx0, rec: msgs[idx0] } : { idx: -1, r
 }
 body.addEventListener('contextmenu', (e) => {
 if (e.target.closest('.msg-bubble') && !e.target.closest('.msg-quote')) {
+/* #1813（私人七改补丁·电脑粘贴修）：以前气泡里一右键就被拦下来当「消息菜单」，电脑上连
+   「复制这段文字」都用不了。现在输入框里右键一律交给浏览器；气泡里选中了文字也放行系统菜单。
+   2026-11-10 再加一条：鼠标（pointerType 为空且非触屏）右键一律交给浏览器系统菜单，
+   手机长按仍然弹自家菜单——电脑上点「复制/粘贴」才是用户真正要的。 */
+const _isMouse = (e.pointerType ? e.pointerType === 'mouse' : true) && !('ontouchstart' in window && matchMedia('(pointer: coarse)').matches);
+const _inField = !!(e.target.closest && e.target.closest('input, textarea, [contenteditable="true"], .ce-box, .chat-input'));
+let _hasSel = false;
+try { const _s = window.getSelection(); _hasSel = !!(_s && _s.rangeCount && !_s.isCollapsed); } catch (e1) {}
+if (!_inField && !_hasSel && !_isMouse) {
 e.preventDefault();
 const ctxR = msgActionEligible(e.target);
 if (ctxR) {
@@ -11250,6 +11259,7 @@ msgSuppressClickUntil = Date.now() + 800;
 if (!msgActions || msgActions.hidden || activeMsgEl !== ctxR.item) {
 msgHoldFired = true;
 openMsgActionsAt(ctxR.item, ctxR.b);
+}
 }
 }
 }

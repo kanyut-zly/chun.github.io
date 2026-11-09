@@ -248,6 +248,28 @@ function dayOfYear() {
   var start = new Date(d.getFullYear(), 0, 1);
   return Math.floor((d - start) / 86400000) + 1;
 }
+/* 「写给你的第 N 张每日卡」里的 N：数的是**真正打开过本站的天数**，不是今年第几天。
+   第一次用 = 第 1 张；之后每跨一天 +1；同一天反复打开不加。清单只存在本机，最多留 400 条。 */
+var DAILY_NO_KEY = 'xy-home-v2:daily-card-days';
+function dailyCardNo() {
+  try {
+    var today = dayKey();
+    var arr = [];
+    try { arr = JSON.parse(localStorage.getItem(DAILY_NO_KEY) || '[]'); } catch (e) { arr = []; }
+    if (!Array.isArray(arr)) arr = [];
+    var hit = -1;
+    for (var i = 0; i < arr.length; i++) { if (arr[i] === today) { hit = i; break; } }
+    if (hit < 0) {
+      arr.push(today);
+      if (arr.length > 400) arr = arr.slice(arr.length - 400);
+      try { localStorage.setItem(DAILY_NO_KEY, JSON.stringify(arr)); } catch (e) {}
+      return arr.length;
+    }
+    return hit + 1;
+  } catch (e) {
+    return 1;
+  }
+}
 function greeting() {
   var h = new Date().getHours();
   if (h < 5) return '夜深了';
@@ -298,7 +320,10 @@ function fillDailyCard() {
   if (hi) hi.textContent = greeting();
   if (title) title.textContent = dailyTitle(cfg);
   if (stamp) stamp.textContent = dateStamp();
-  if (subject) subject.textContent = '写给你的第 ' + dayOfYear() + ' 张每日卡';
+  /* 私人七改补丁（2026-11-10）：以前这里写的是「第 dayOfYear() 张」，也就是「今年第几天」，
+     11 月 10 日打开就显示第 314 张，用户只看了一天却被吓到。改成按真正记录过的天数来数：
+     本地存一份「打开过的日期」清单，第一次用是第 1 张，之后每次新的一天 +1。 */
+  if (subject) subject.textContent = '写给你的第 ' + dailyCardNo() + ' 张每日卡';
   if (face) face.textContent = tm && tm.e ? tm.e : '💜';
 
   if (meEmoji) meEmoji.textContent = mine && mine.e ? mine.e : '🫧';
@@ -399,13 +424,18 @@ function closeDaily() {
   dailyOpen = false;
   var ov = byId('mochi-daily');
   if (!ov) return;
-  ov.classList.remove('mday-open');
+  ov.classList.remove('mday-open', 'mday-visible');
   ov.classList.add('mday-leaving');
+  /* 私人七改补丁·电脑粘贴修：立刻停止拦截鼠标（配合 CSS 的 :not(.mday-open) 规则）。
+     以前只等 330ms 定时器去设 hidden，定时器一旦没跑成，这层全屏遮罩就永远盖在页面上，
+     表现为「鼠标左右键都动不了、粘不上」。 */
+  try { ov.style.pointerEvents = 'none'; } catch (e) {}
   if (dailyCloseTimer) clearTimeout(dailyCloseTimer);
   dailyCloseTimer = setTimeout(function () {
     dailyCloseTimer = null;
     ov.hidden = true;
     ov.classList.remove('mday-leaving', 'mday-visible');
+    try { ov.style.pointerEvents = ''; } catch (e) {}
     try { document.body.style.overflow = dailyPrevOverflow || ''; } catch (e) {}
   }, 330);
 }

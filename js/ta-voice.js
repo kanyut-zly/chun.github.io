@@ -45,11 +45,12 @@
       const KEY = {
         EN: 'tv-en', PROVIDER: 'tv-provider', SPEED: 'tv-speed',
         MM_KEY: 'tv-mm-key', MM_GROUP: 'tv-mm-group', MM_MODEL: 'tv-mm-model', MM_HOST: 'tv-mm-host', MM_VOICE: 'tv-mm-voice',
-        FISH_KEY: 'tv-fish-key', FISH_MODEL: 'tv-fish-model', FISH_VOICE: 'tv-fish-voice',
+        FISH_KEY: 'tv-fish-key', FISH_MODEL: 'tv-fish-model', FISH_VOICE: 'tv-fish-voice', FISH_HOST: 'tv-fish-host',
         AUTO: 'tv-auto', CALL: 'tv-call'
       };
       // 跟联系人相关、但不该被「跨桌面同步设置」带走的键（contacts.js 的 EXCLUDE 里）
       const DEFAULT_MM_HOST = 'https://api.minimaxi.com';
+      const DEFAULT_FISH_HOST = 'https://api.fish.audio';
       const MM_MODELS = ['speech-2.8-turbo', 'speech-2.8-hd', 'speech-2.6-turbo', 'speech-2.6-hd', 'speech-02-turbo', 'speech-02-hd'];
       const FISH_MODELS = ['speech-1.1', 'speech-1.2', 's1'];
       // MiniMax 的几个备选域名（新版开放平台 / 老版平台）
@@ -153,7 +154,10 @@
 
       async function mmSynth(text, key, group, model, host, voice, spd) {
         const cand = (function () {
-          const h = String(host || '').trim().replace(/\/+$/, '');
+          let h = String(host || '').trim().replace(/\/+$/, '');
+          // 用户可能直接把「完整接口地址」粘进来（带 /v1 或 /v1/t2a_v2），先剥掉再拼
+          h = h.replace(/\/v1\/t2a_v2$/i, '').replace(/\/v1$/i, '');
+          if (h && !/^https?:\/\//i.test(h)) h = 'https://' + h;
           if (h) {
             const known = MM_HOSTS.find(x => x.host === h);
             return { host: h, legacy: known ? known.legacy : false };
@@ -199,7 +203,15 @@
         return hexToAudio(hex, 'audio/mpeg');
       }
 
-      async function fishSynth(text, key, model, voice) {
+      // 接口地址：留空＝官方域名；填了就用自己的（可带或不带 /v1 后缀）
+      function mmHostVal() {
+        return String(g(KEY.MM_HOST, '')).trim().replace(/\/+$/, '');
+      }
+      function fishHost() {
+        return String(g(KEY.FISH_HOST, '')).trim().replace(/\/+$/, '') || DEFAULT_FISH_HOST;
+      }
+
+      async function fishSynth(text, key, model, voice, host) {
         const body = {
           text: text,
           reference_id: voice || undefined,
@@ -210,16 +222,20 @@
           latency: 'normal'
         };
         if (!body.reference_id) delete body.reference_id;
+        let base = String(host || '').trim().replace(/\/+$/, '') || DEFAULT_FISH_HOST;
+        // 同样容错：直接粘了完整接口地址（带 /v1 或 /v1/tts）也认
+        base = base.replace(/\/v1\/tts$/i, '').replace(/\/v1$/i, '');
+        if (base && !/^https?:\/\//i.test(base)) base = 'https://' + base;
         let res;
         try {
-          res = await fetch('https://api.fish.audio/v1/tts', {
+          res = await fetch(base + '/v1/tts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
             body: JSON.stringify(body),
             signal: abortAfter(40000)
           });
         } catch (e) {
-          const err = new Error('连不上 Fish Audio（网络不通），稍后再试');
+          const err = new Error('连不上 Fish Audio（网络 / 域名不通），换一个接口地址或稍后再试');
           err.net = true; throw err;
         }
         if (!res.ok) {
@@ -243,7 +259,7 @@
           const key = String(g(KEY.FISH_KEY, '')).trim();
           const voice = String(g(KEY.FISH_VOICE, '')).trim();
           if (!key) throw new Error('还没填 Fish Audio 的 Key（设置 → 语音 → 选 Fish Audio）');
-          return fishSynth(text, key, String(g(KEY.FISH_MODEL, 'speech-1.1')).trim(), voice);
+          return fishSynth(text, key, String(g(KEY.FISH_MODEL, 'speech-1.1')).trim(), voice, fishHost());
         }
         const key = String(g(KEY.MM_KEY, '')).trim();
         const voice = String(g(KEY.MM_VOICE, '')).trim();
@@ -251,7 +267,7 @@
         if (!voice) throw new Error('还没选音色：点「拉取音色名单」挑一个，或直接填 voice_id');
         return mmSynth(text, key, String(g(KEY.MM_GROUP, '')).trim(),
           String(g(KEY.MM_MODEL, MM_MODELS[0])).trim(),
-          String(g(KEY.MM_HOST, DEFAULT_MM_HOST)).trim(), voice, speedVal());
+          mmHostVal(), voice, speedVal());
       }
 
       // ============================================================
@@ -499,28 +515,43 @@
           '<div class="rs-body tv-body"></div>';
         host().appendChild(drawer);
         drawer.querySelector('.rs-x').addEventListener('click', close);
+        // 手机上点输入框外面的空白处也能聚焦到输入框（整行可点，像原生表单一样）
+        drawer.addEventListener('click', function (e) {
+          const t = e.target;
+          if (!t || !t.closest) return;
+          if (t.closest('button, input, select, textarea, a, .rs-row, .tv-voice, .tv-list')) return;
+          const f = t.closest('.tv-field');
+          if (!f) return;
+          const inp = f.querySelector('input, select');
+          if (inp && inp.focus) { try { inp.focus(); } catch (err) {} }
+        });
         render();
       }
       function open() { build(); drawer.hidden = false; render(); }
-      function close() { if (drawer) drawer.hidden = true; }
+      function close() {
+        try { if (drawer && drawer.__tvSave) drawer.__tvSave(); } catch (e) {}
+        if (drawer) drawer.hidden = true;
+      }
       window.taVoiceOpen = open;
 
       function field(label, key, placeholder, sub, opts) {
         opts = opts || {};
-        const val = g(key, opts.def || '');
-        return '<label class="tv-field' + (opts.wide ? ' wide' : '') + '">' +
+        const val = (opts.value !== undefined) ? String(opts.value == null ? '' : opts.value) : g(key, opts.def || '');
+        // 用 div 而不是 label：手机 Safari 里 label 包着 input 时，点整行会把点击"转交"给
+        // input 又立刻失焦，键盘弹不出来——这是抽屉在手机上点不动的根因。
+        return '<div class="tv-field' + (opts.wide ? ' wide' : '') + '">' +
           '<span class="tv-f-t">' + esc(label) + (sub ? '<i>' + esc(sub) + '</i>' : '') + '</span>' +
-          '<input class="tv-in" type="' + (opts.pass ? 'password' : 'text') + '" data-key="' + key + '" ' +
+          '<input class="tv-in" data-no-ce="1" type="' + (opts.pass ? 'password' : 'text') + '" data-key="' + key + '" ' +
           'value="' + esc(val) + '" placeholder="' + esc(placeholder) + '" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">' +
-          '</label>';
+          '</div>';
       }
       function selectField(label, key, list, cur) {
-        return '<label class="tv-field"><span class="tv-f-t">' + esc(label) + '</span>' +
+        return '<div class="tv-field"><span class="tv-f-t">' + esc(label) + '</span>' +
           '<select class="tv-in" data-key="' + key + '">' +
           list.map(function (o) {
             return '<option value="' + esc(o.value) + '"' + (o.value === cur ? ' selected' : '') + '>' + esc(o.label) + '</option>';
           }).join('') +
-          '</select></label>';
+          '</select></div>';
       }
 
       function render() {
@@ -553,13 +584,16 @@
                   field('API Key', KEY.MM_KEY, '填开放平台的 Key', '必填', { pass: true }) +
                   field('GroupId', KEY.MM_GROUP, '老版 Key 才要填', '新版可留空') +
                   field('模型', KEY.MM_MODEL, '如 speech-2.8-turbo', '点下面「拉取模型」可选') +
-                  field('接口地址', KEY.MM_HOST, DEFAULT_MM_HOST, '默认 api.minimaxi.com') +
+                  field('接口地址', KEY.MM_HOST, '留空＝官方 api.minimaxi.com', '不填就用官方，填了用你的') +
                   field('音色 voice_id', KEY.MM_VOICE, '如 male-qn-qingse', '点下面「拉取音色名单」') +
                 '</div>' +
                 '<div class="tv-acts">' +
                   '<button class="rs-act tv-btn" data-act="mm-models" type="button">拉取模型</button>' +
                   '<button class="rs-act tv-btn" data-act="mm-voices" type="button">拉取音色名单</button>' +
                   '<button class="rs-act tv-btn tv-primary" data-act="preview" type="button">试听一句</button>' +
+                '</div>' +
+                '<div class="tv-acts tv-save-row">' +
+                  '<button class="rs-act tv-btn tv-save" data-act="save" type="button">保存设置</button>' +
                 '</div>' +
                 '<div class="tv-list" id="tv-mm-model-list" hidden></div>' +
                 '<div class="tv-list" id="tv-mm-voice-list" hidden></div>' +
@@ -568,12 +602,16 @@
                 '<div class="tv-fields">' +
                   field('API Key', KEY.FISH_KEY, '填 Fish Audio 的 API Key', '必填', { pass: true }) +
                   field('模型', KEY.FISH_MODEL, '如 speech-1.1', '点下面「拉取模型」可选') +
+                  field('接口地址', KEY.FISH_HOST, '留空＝官方 api.fish.audio', '不填就用官方，填了用你的') +
                   field('音色 ID（reference_id）', KEY.FISH_VOICE, '填任意一个公开 / 自己的音色 ID', '点下面「拉取音色名单」') +
                 '</div>' +
                 '<div class="tv-acts">' +
                   '<button class="rs-act tv-btn" data-act="fish-models" type="button">拉取模型</button>' +
                   '<button class="rs-act tv-btn" data-act="fish-voices" type="button">拉取音色名单</button>' +
                   '<button class="rs-act tv-btn tv-primary" data-act="preview" type="button">试听一句</button>' +
+                '</div>' +
+                '<div class="tv-acts tv-save-row">' +
+                  '<button class="rs-act tv-btn tv-save" data-act="save" type="button">保存设置</button>' +
                 '</div>' +
                 '<div class="tv-list" id="tv-fish-model-list" hidden></div>' +
                 '<div class="tv-list" id="tv-fish-voice-list" hidden></div>' +
@@ -604,19 +642,31 @@
             render();
           });
         });
-        // 输入
-        body.querySelectorAll('.tv-in').forEach(function (inp) {
+        // 输入：输入时就存（不用等 blur —— 手机上一滚动列表就 blur 了，
+        // 以前正是这样导致"填了没保存"）。所有输入框都当场写进本机存储。
+        const normOf = function (inp) {
+          let v = String(inp.value || '').trim();
           const k = inp.dataset.key;
-          const ev = inp.tagName === 'SELECT' ? 'change' : 'blur';
-          inp.addEventListener(ev, function () {
-            let v = String(inp.value || '').trim();
-            if (k === KEY.MM_HOST) v = v.replace(/\/+$/, '');
-            s(k, v);
+          if (k === KEY.MM_HOST || k === KEY.FISH_HOST) v = v.replace(/\/+$/, '');
+          return v;
+        };
+        body.querySelectorAll('.tv-in').forEach(function (inp) {
+          ['input', 'change', 'blur'].forEach(function (ev) {
+            inp.addEventListener(ev, function () { s(inp.dataset.key, normOf(inp)); });
           });
-          if (inp.tagName === 'SELECT') {
-            inp.addEventListener('change', function () { s(k, inp.value); });
-          }
         });
+        // 统一把当前界面上所有输入框的值写进本机存储（保存按钮 / 关抽屉时兜底）
+        function saveInputs(showToast) {
+          body.querySelectorAll('.tv-in').forEach(function (inp) { s(inp.dataset.key, normOf(inp)); });
+          if (showToast !== false) toast('设置已保存到本机');
+        }
+        const saveBtn = body.querySelector('[data-act="save"]');
+        if (saveBtn) saveBtn.addEventListener('click', function () {
+          try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) {}
+          saveInputs(true);
+        });
+        // 标签页切走 / 抽屉关闭前也兜底存一次
+        try { drawer.__tvSave = function () { saveInputs(false); }; } catch (e) {}
         // 操作
         const speedRow = body.querySelector('[data-act="speed"]');
         if (speedRow) speedRow.addEventListener('click', function () {
@@ -687,7 +737,7 @@
         const key = String(g(KEY.MM_KEY, '')).trim();
         if (!key) { toast('先填 MiniMax 的 Key'); return; }
         const group = String(g(KEY.MM_GROUP, '')).trim();
-        const host = String(g(KEY.MM_HOST, DEFAULT_MM_HOST)).trim().replace(/\/+$/, '');
+        const host = mmHostVal() || DEFAULT_MM_HOST;
         const known = MM_HOSTS.find(x => x.host === host);
         const legacy = known ? known.legacy : false;
         const q = legacy && group ? '?GroupId=' + encodeURIComponent(group) : '';
@@ -719,12 +769,13 @@
             } catch (e) { why = e && e.message || '连不上'; }
           }
         } finally { btn.disabled = false; btn.textContent = old; }
-        // 只认能念字的模型：语音合成那一族
+        // 只认能念字的模型：语音合成那一族；识别不出来（中转改名）就直接全列
         const isSpeech = function (id) { return /^(minimax[-/\s]?)?(speech|t2a|audio|voice)/i.test(String(id || '')); };
         const speech = got.filter(x => isSpeech(x.id));
-        if (speech.length) {
-          modelListHtml(listEl, speech, KEY.MM_MODEL, String(g(KEY.MM_MODEL, '')).trim(), '');
-          toast('拉到 ' + speech.length + ' 个语音模型，点一个就用它');
+        const show = speech.length ? speech : got;
+        if (show.length) {
+          modelListHtml(listEl, show, KEY.MM_MODEL, String(g(KEY.MM_MODEL, '')).trim(), '');
+          toast(speech.length ? ('拉到 ' + speech.length + ' 个语音模型，点一个就用它') : ('拉到 ' + show.length + ' 个模型，点一个就用它'));
           return;
         }
         // 拉不到（老版没这接口 / 网络）：退回内置推荐，照样能点
@@ -741,7 +792,7 @@
         let got = [];
         let why = '';
         try {
-          const res = await fetch('https://api.fish.audio/model?page_size=100&page_number=1', {
+          const res = await fetch(fishHost() + '/model?page_size=100&page_number=1', {
             headers: { Authorization: 'Bearer ' + key },
             signal: abortAfter(25000)
           });
@@ -774,9 +825,10 @@
         const key = String(g(KEY.MM_KEY, '')).trim();
         if (!key) { toast('先填 MiniMax 的 Key'); return; }
         const group = String(g(KEY.MM_GROUP, '')).trim();
-        const host = String(g(KEY.MM_HOST, DEFAULT_MM_HOST)).trim();
+        const host = mmHostVal() || DEFAULT_MM_HOST;
         const cand = (function () {
-          const h = host.replace(/\/+$/, '');
+          let h = host.replace(/\/+$/, '').replace(/\/v1$/i, '');
+          if (!/^https?:\/\//i.test(h)) h = 'https://' + h;
           const known = MM_HOSTS.find(x => x.host === h);
           return { host: h, legacy: known ? known.legacy : false };
         })();
@@ -842,7 +894,7 @@
         let got = [];
         let lastErr = null;
         try {
-          const res = await fetch('https://api.fish.audio/model?page_size=50&page_number=1', {
+          const res = await fetch(fishHost() + '/model?page_size=50&page_number=1', {
             headers: { Authorization: 'Bearer ' + key },
             signal: abortAfter(25000)
           });

@@ -6621,7 +6621,29 @@ document.querySelectorAll('.desk-dragging').forEach(n => n.classList.remove('des
 document.addEventListener('decor-exited', resetMoveMode);
 const _tabbar = document.querySelector('.tabbar');
 if (_tabbar) _tabbar.addEventListener('click', resetMoveMode);
-if (phone) phone.addEventListener('contextmenu', (e) => e.preventDefault());
+/* 私人七改补丁·电脑右键修（2026-11-10）：原来这里对整个 .phone 无差别 preventDefault，
+   桌面、聊天、设置页里的右键菜单全被吃掉了——电脑上右键没有「粘贴/复制」就是这个原因。
+   这条规则的初衷只是「长按桌面图标不要弹系统菜单」，现在改成只在桌面空位、图标上拦；
+   输入框、聊天内容、设置页一律放行，让浏览器自己的右键菜单正常工作。 */
+if (phone) phone.addEventListener('contextmenu', (e) => {
+  try {
+    const t = e.target;
+    if (t && t.closest) {
+      // 输入区 / 可编辑区：绝不拦
+      if (t.closest('input, textarea, select, [contenteditable], .ce-box, .chat-input')) return;
+      // 有选中文字：放行，让用户能复制
+      const s = window.getSelection();
+      if (s && s.rangeCount && !s.isCollapsed) return;
+      // 聊天内容、设置页、抽屉、弹窗：放行
+      if (t.closest('#page-chat, #page-group-chat, #page-setting, .rs-drawer, .tv-drawer, [class*="mask"], [class*="overlay"], [class*="dialog"], [class*="popup"], .page:not(#page-phone)')) return;
+      // 电脑（鼠标/触控板）上的右键一律交给浏览器系统菜单——「复制 / 粘贴 / 检查」都在里面
+      const _mouse = (e.pointerType ? e.pointerType === 'mouse' : true) &&
+        !(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+      if (_mouse) return;
+    }
+  } catch (err) {}
+  e.preventDefault();
+});
 pagesBox.addEventListener('touchstart', (e) => {
 if (!inMoveMode) return;
 if (e.target.closest('.desk-lib, .desk-page-add, .decor-bar')) return;

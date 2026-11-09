@@ -276,7 +276,7 @@
     if (e.status === 401) return 'Token 不对或已过期（401）：重新生成一个有 Contents 读写权限的 Token';
     if (e.status === 403) return '没有权限或被限流（403）：确认 Token 对该仓库有 Contents 读写权限';
     if (e.status === 404) return '找不到仓库或分支（404）：检查「用户名/仓库名」、分支名，以及 Token 是否有该仓库的权限';
-    if (e.status === 409) return '仓库内容刚变过（409）：再点一次就好';
+    if (e.status === 409) return 'GitHub 说这次改动和仓库当前状态冲突（409）' + (e.message && e.message !== 'Conflict' ? '：' + e.message : '') + '。多半是仓库刚被别人/别的设备推过，再点一次「备份到云端」通常就好';
     if (e.status === 422) return '提交被拒绝（422）：分支名或路径可能不合法';
     if (e.status >= 500) return 'GitHub 那边暂时出错（' + e.status + '），过会儿再试';
     return (e.message || '未知错误') + (e.status ? '（' + e.status + '）' : '');
@@ -328,36 +328,71 @@
     if (!blobSha) throw new Error('上传内容失败：GitHub 没有返回 sha');
     if (opts.progress) opts.progress(76, 0, '写入提交');
 
-    /* 2) 当前分支头 */
-    let headSha = '';
-    try {
-      const ref = await gh(c, '/git/ref/heads/' + encodeURIComponent(c.branch));
-      headSha = (ref && ref.object && ref.object.sha) || '';
-    } catch (e) {
-      if (e.status !== 404) throw e;
-      headSha = '';
-    }
-    if (!headSha) {
-      /* 分支不存在：要求仓库至少有一个提交（用户在 GitHub 上 Initialize 过） */
-      throw new Error('分支「' + c.branch + '」不存在。请先在 GitHub 上给仓库建好这个分支（新建仓库时勾选 Add a README 就会自动有 main），或在配置里改成正确的分支名');
-    }
     const name = FILE_PREFIX + localStamp() + '.json';
-    const tree = await gh(c, '/git/trees', {
-      method: 'POST',
-      json: {
-        base_tree: headSha ? (await gh(c, '/git/commits/' + headSha)).tree.sha : undefined,
-        tree: [{ path: pathOf(c, name), mode: '100644', type: 'blob', sha: blobSha }]
+    const filePath = pathOf(c, name);
+    /* 私人七改补丁·云备份 409 修（2026-11-10）：
+       以前每次都「取分支头 → 建 tree/commit → PATCH ref」三步走，只要中途分支被别人/别的设备
+       推过一次，最后那步 PATCH 就会 409（force:false 时永不覆盖），用户第一次用也可能撞上
+       （比如网页端刚 Initialize 仓库、自动备份和手动备份同时跑）。
+       现在改用 Contents API 一步 PUT：它自己处理「文件不存在就新建 / 存在就更新」，
+       失败时再按要求带上最新 sha 重试几次，409 就基本不会再冒出来。 */
+    const commitMsg = 'mochi 云备份 ' + new Date().toLocaleString();
+    const contentB64 = b64OfUtf8(json);
+
+    /* 先确认分支存在：仓库完全空着（没有 main）时 PUT 只会得到 404，报错要说人话 */
+    try {
+      await gh(c, '/git/ref/heads/' + encodeURIComponent(c.branch));
+    } catch (e) {
+      if (e.status === 404) {
+        throw new Error('分支「' + c.branch + '」在仓库里还不存在。去 GitHub 仓库首页点一下「Add a README file」提交一次（或把这里的「分支」改成你实际用的分支名）再备份');
       }
-    });
-    const commit = await gh(c, '/git/commits', {
-      method: 'POST',
-      json: { message: 'mochi 云备份 ' + new Date().toLocaleString(), tree: tree.sha, parents: [headSha] }
-    });
-    await gh(c, '/git/refs/heads/' + encodeURIComponent(c.branch), { method: 'PATCH', json: { sha: commit.sha, force: false } });
-    if (opts.progress) opts.progress(100, 0, '完成');
-    const res = { sha: commit.sha, name: name, path: pathOf(c, name), size: bytes, missing: got.missing.length };
-    saveCfg({ lastAt: Date.now(), lastSha: commit.sha });
-    return res;
+      throw e;
+    }
+
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let sha = null;
+      try {
+        const cur = await gh(c, '/contents/' + encodeURI(filePath) + '?ref=' + encodeURIComponent(c.branch));
+        if (cur && !Array.isArray(cur) && cur.sha) sha = cur.sha;
+      } catch (e) {
+        if (e.status === 409 || e.status >= 500) { lastErr = e; await new Promise(function (r) { setTimeout(r, 400 + attempt * 600); }); continue; }
+        if (e.status !== 404) throw e;   /* 404 = 文件还没备份过，正常 */
+      }
+      const body = { message: commitMsg, content: contentB64, branch: c.branch };
+      if (sha) body.sha = sha;   /* 已有同名文件才带 sha；首次备份绝不能带 */
+      try {
+        const put = await gh(c, '/contents/' + encodeURI(filePath), { method: 'PUT', json: body });
+        const commitSha = (put && ((put.commit && put.commit.sha) || (put.content && put.content.sha))) || '';
+        if (opts.progress) opts.progress(100, 0, '完成');
+        const res = { sha: commitSha, name: name, path: filePath, size: bytes, missing: got.missing.length };
+        saveCfg({ lastAt: Date.now(), lastSha: commitSha });
+        return res;
+      } catch (e) {
+        lastErr = e;
+        if (e.status === 409 || e.status === 422 || e.status >= 500) {
+          await new Promise(function (r) { setTimeout(r, 400 + attempt * 600); });
+          continue;   /* 重新取最新 sha 再试 */
+        }
+        throw e;
+      }
+    }
+    throw lastErr || new Error('上传失败（重试 3 次都没成）');
+  }
+
+  /* UTF-8 → base64（Contents API 要求 base64，不能直接塞中文原串） */
+  function b64OfUtf8(str) {
+    try {
+      const u8 = new TextEncoder().encode(str);
+      let bin = '';
+      const CH = 0x8000;
+      for (let i = 0; i < u8.length; i += CH) {
+        bin += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+      }
+      return btoa(bin);
+    } catch (e) {
+      try { return btoa(unescape(encodeURIComponent(str))); } catch (e2) { return ''; }
+    }
   }
 
   /* ===== 列表 ===== */
@@ -429,6 +464,7 @@
       '<div class="ghs-sec ghs-auto"><label class="ghs-check"><input type="checkbox" id="ghs-auto"' + (c.auto ? ' checked' : '') + '> <span>自动备份（打开应用时，距上次超过 6 小时就静默传一次）</span></label></div>' +
       '<div class="ghs-state" id="ghs-state">上次备份：' + last + '</div>' +
       '<div class="ghs-btns">' +
+      '<button type="button" class="ghs-btn" id="ghs-save">保存设置</button>' +
       '<button type="button" class="ghs-btn" id="ghs-test">测试连接</button>' +
       '<button type="button" class="ghs-btn main" id="ghs-up">备份到云端</button>' +
       '<button type="button" class="ghs-btn" id="ghs-list">从云端恢复</button>' +
@@ -452,6 +488,24 @@
       auto: !!($('ghs-auto') && $('ghs-auto').checked),
       range: rangeEl ? rangeEl.dataset.r : 'full'
     });
+  }
+  /* 「保存设置」用：仓库名还没填好时也先把 Token / 分支 / 目录 存下来，
+     免得手机上先填了 Key 又因为仓库名不合规整份被丢掉。 */
+  function saveFormLoose() {
+    const $ = function (i) { return document.getElementById(i); };
+    const p = parseRepo(($('ghs-repo') || {}).value || '');
+    const dir = String(($('ghs-dir') || {}).value || 'mochi-backup').trim().replace(/^\/+/, '').replace(/\/+$/, '');
+    const rangeEl = document.querySelector('#ghs-range .ghs-pill.on');
+    const patch = {
+      token: String(($('ghs-token') || {}).value || '').trim(),
+      branch: String(($('ghs-branch') || {}).value || 'main').trim() || 'main',
+      dir: dir || 'mochi-backup',
+      auto: !!($('ghs-auto') && $('ghs-auto').checked),
+      range: rangeEl ? rangeEl.dataset.r : 'full'
+    };
+    if (p) { patch.owner = p.owner; patch.repo = p.repo; }
+    saveCfg(patch);
+    return !!p;
   }
   let busy = false;
   function setBusy(v) { busy = !!v; }
@@ -496,6 +550,7 @@
     } catch (e) {
       hideProg();
       setMsg('✗ ' + ghMsg(e), true);
+      const { openHint } = _hints;
       modal('云备份没成功', ghMsg(e) + '\n\n可以点「测试连接」先看是仓库、分支还是令牌的问题。');
     } finally { setBusy(false); }
   }
@@ -573,13 +628,25 @@
           if (!b) return;
           Array.prototype.forEach.call(range.children, function (x) { x.classList.remove('on'); });
           b.classList.add('on');
+          try { saveFormLoose(); } catch (e) {}
         });
       }
       ['ghs-repo', 'ghs-branch', 'ghs-dir', 'ghs-token'].forEach(function (id) {
         const el = $(id);
-        if (el) el.addEventListener('change', function () { try { readForm(); } catch (e) {} });
+        if (el) {
+          // 手机上滚动 / 点别处会立刻 blur，只在 change 存容易丢；输入时就先记下来
+          el.addEventListener('input', function () { try { saveFormLoose(); } catch (e) {} });
+          el.addEventListener('change', function () { try { saveFormLoose(); } catch (e) {} });
+        }
       });
-      if ($('ghs-auto')) $('ghs-auto').addEventListener('change', function () { try { readForm(); } catch (e) {} });
+      if ($('ghs-auto')) $('ghs-auto').addEventListener('change', function () { try { saveFormLoose(); } catch (e) {} });
+      if ($('ghs-save')) $('ghs-save').onclick = function () {
+        try {
+          if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+          const ok = saveFormLoose();
+          toast(ok ? '设置已保存到本机' : '已保存，但「用户名/仓库名」还没写成 owner/repo');
+        } catch (e) { toast(e && e.message ? e.message : '保存失败'); }
+      };
       if ($('ghs-test')) $('ghs-test').onclick = doTest;
       $('ghs-up').onclick = doBackup;
       $('ghs-list').onclick = doList;

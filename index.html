@@ -918,6 +918,8 @@ margin-bottom:14px; white-space:pre-wrap; word-break:break-word;
 }
 .modal-static[hidden] { display:none; }
 .modal-static { max-height:38vh; overflow-y:auto; overscroll-behavior:auto; }
+/* 云备份面板塞在 modal-static 里，它有输入框和按钮，不能被 38vh 截断、也不能按 pre-wrap 排版 */
+.modal-static:has(.ghs) { max-height:62vh; white-space:normal; }
 .pwa-install {
 position:fixed; right:16px; bottom:calc(16px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px))); z-index:900;
 display:flex; align-items:center; gap:6px;
@@ -1233,6 +1235,17 @@ html.desk-layer-cold .desktop-pages.has-page-bg .page-slide { will-change: auto;
 }
 #page-phone { position:relative; }
 #page-phone { user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
+/* 私人七改补丁·电脑粘贴修：上面这条 user-select:none 是为了桌面图标长按不选中文字，
+   但它会一路继承给 #page-phone 里的每一个输入框——电脑上于是双击选不中词、右键「粘贴/复制」
+   变灰、拖选也拖不动，表现就是「鼠标左右键都动不了、粘不上」。输入区一律恢复可选中。 */
+#page-phone input,
+#page-phone textarea,
+#page-phone select,
+#page-phone [contenteditable="true"],
+#page-phone [contenteditable=""],
+#page-phone .ce-box {
+  user-select: text; -webkit-user-select: text; -webkit-touch-callout: default;
+}
 .dots {
 position:absolute; left:0; right:0; bottom:6px;
 display:flex; justify-content:center; gap:8px; padding:0;
@@ -3367,6 +3380,12 @@ html:has(.rs-drawer:not([hidden])) #modal-mask { z-index:140; }
 select.tv-in { font-weight:600; }
 .tv-acts { display:flex; gap:8px; margin-top:10px; }
 .tv-acts .tv-btn { flex:1; padding:11px; font-size:12.5px; }
+/* 保存栏单独一行、常驻可见，手机上不用滚来滚去找 */
+.tv-save-row { position:sticky; bottom:0; margin-top:12px; padding:10px 0 2px; background:#fff; z-index:2; }
+.tv-save-row .tv-btn.tv-save { flex:1; padding:13px; font-size:13.5px; font-weight:900; background:rgba(52,199,89,.14); border-color:rgba(52,199,89,.45); color:#1c7a3a; }
+.tv-save-row .tv-btn.tv-save:active { background:rgba(52,199,89,.26); }
+[data-theme="dark"] .tv-save-row { background:#17161c; }
+[data-theme="dark"] .tv-save-row .tv-btn.tv-save { background:rgba(52,199,89,.2); border-color:rgba(52,199,89,.5); color:#7ee2a0; }
 .tv-btn.tv-primary { background:rgba(124,92,255,.12); border-color:rgba(124,92,255,.35); color:#5a3fd6; font-weight:800; }
 .tv-list { margin-top:10px; max-height:220px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; }
 .tv-list[hidden] { display:none; }
@@ -11859,6 +11878,9 @@ border: 1px solid var(--input-border); background: var(--input-bg); color: var(-
 border-radius: 13px; padding: 10px 8px; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer;
 }
 .ghs-btn.main { background: var(--ink); color: var(--card-bg); border-color: transparent; }
+/* 「保存设置」单独用绿色常亮，手机上不会和「备份到云端」看混 */
+#ghs-save { background: rgba(52,199,89,.14); border-color: rgba(52,199,89,.45); color: #1c7a3a; font-weight: 800; }
+[data-theme="dark"] #ghs-save { background: rgba(52,199,89,.2); border-color: rgba(52,199,89,.5); color: #7ee2a0; }
 .ghs-btn:active { transform: translateY(1px); }
 .ghs-prog { height: 6px; border-radius: 999px; background: rgba(0,0,0,.08); overflow: hidden; }
 .ghs-prog[hidden] { display: none; }
@@ -12341,6 +12363,11 @@ font-size: 11.5px; color: var(--muted, #8a8a8a); cursor: pointer; touch-action: 
 }
 #mochi-daily.mday-open { opacity: 1; }
 #mochi-daily[hidden] { display: none; }
+/* 私人七改补丁·电脑粘贴修：关闭动画跑完 330ms 后会把 hidden 设上；但只要那次定时器没跑成
+   （切后台被打断 / 脚本异常），这层 opacity:0 的全屏遮罩还留着 pointer-events:auto + z-index:99990，
+   就会变成一层看不见的罩子盖住整页——鼠标左右键全被它吃掉。这里让「没开」的状态一律不拦鼠标。 */
+#mochi-daily:not(.mday-open) { pointer-events: none; }
+#mochi-daily.mday-open { pointer-events: auto; }
 #mochi-daily .mday-card {
   position: relative; width: min(372px, 100%); max-height: 90vh; overflow-y: auto;
   border-radius: 30px;
@@ -14464,7 +14491,7 @@ font-size: 11.5px; color: var(--muted, #8a8a8a); cursor: pointer; touch-action: 
         </div>
         <div class="set-row" id="row-cloud">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 010-8 5.5 5.5 0 0110.6-1.4A3.6 3.6 0 0118 18z"/><path d="M12 12v6M9.5 15.5L12 18l2.5-2.5"/></svg></div>
-          <div class="txt">云备份（GitHub）<span class="sub">备份到自己的 GitHub 私有仓库，换设备拉回来即可</span></div>
+          <div class="txt">云备份（GitHub）<span class="sub">备份到自己的 GitHub 私有仓库，换设备拉回来即可 · 面板里有「保存设置」</span></div>
           <div class="arrow"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div>
         </div>
       </div>

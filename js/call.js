@@ -390,6 +390,9 @@ fillAv(videoSelfInner, ua);
 }
 if (videoSelf) videoSelf.classList.toggle('cam-off', !currentCall.cam);
 }
+/* 私人七改：语音通话就是语音——只有麦克风，不出现摄像头按钮，也不会弹「TA 请求开摄像头」。
+   只有视频通话才同时有麦克风和摄像头。 */
+function isVoiceCall() { return !!(currentCall && currentCall.type !== 'video'); }
 function syncCallDevices() {
 if (!currentCall) return;
 const micOn = !!currentCall.mic, camOn = !!currentCall.cam;
@@ -400,6 +403,9 @@ const lb = micBtn.querySelector('span');
 if (lb) lb.textContent = micOn ? '麦克风' : '已静音';
 }
 if (camBtn) {
+const hide = isVoiceCall();
+camBtn.hidden = hide;
+camBtn.style.display = hide ? 'none' : '';
 camBtn.classList.toggle('off', !camOn);
 camBtn.setAttribute('aria-pressed', camOn ? 'true' : 'false');
 const lb = camBtn.querySelector('span');
@@ -434,8 +440,9 @@ if (!silent) toast(on ? '麦克风已打开' : '麦克风已关闭');
 }
 function setCallCam(on, silent) {
 if (!currentCall) return;
+// 语音通话没有摄像头这一项：TA 请求也不给开
+if (on && isVoiceCall()) return;
 currentCall.cam = !!on;
-if (on && currentCall.type !== 'video') currentCall.type = 'video';
 syncCallTypeUI();
 saveCallActive();
 if (!silent) toast(on ? '摄像头已打开' : '摄像头已关闭');
@@ -462,7 +469,7 @@ callReqTimer = 0;
 if (!currentCall || currentCall.status !== 'connected') return;
 if (reqKind) { scheduleCallReq(); return; }
 const cc = callCfg(currentCall.cid);
-const canCam = !currentCall.cam && cc.camReq > 0;
+const canCam = currentCall.type === 'video' && !currentCall.cam && cc.camReq > 0;
 const canMic = !currentCall.mic && cc.micReq > 0;
 const rollCam = canCam && Math.random() * 100 < cc.camReq;
 const rollMic = canMic && Math.random() * 100 < cc.micReq;
@@ -475,6 +482,7 @@ scheduleCallReq();
 }
 function showCallRequest(kind) {
 if (!currentCall || currentCall.status !== 'connected' || reqKind) return;
+if (kind === 'cam' && currentCall.type !== 'video') kind = 'mic'; // 语音通话不请求开摄像头
 reqKind = kind;
 if (reqTitle) reqTitle.textContent = kind === 'cam' ? '想看看你' : '想听听你的声音';
 if (reqText) reqText.textContent = kind === 'cam'
@@ -885,6 +893,7 @@ currentCall.status = 'connected';
 if (!currentCall.type) currentCall.type = 'voice';
 if (currentCall.mic === undefined) currentCall.mic = true;
 if (currentCall.cam === undefined) currentCall.cam = false;
+if (currentCall.type !== 'video') currentCall.cam = false; // 语音通话没有摄像头
 if (window.musicHoldForCall) window.musicHoldForCall(false);
 if (cdEl) cdEl.hidden = true;
 if (nameEl) nameEl.textContent = partnerName();
@@ -1142,7 +1151,7 @@ const dir = info.direction || 'out';
 const name = info.name || 'TA';
 if (callCfg().resume !== 0) {
 try {
-currentCall = { cid: cid, direction: dir, status: 'connected', startTime: info.startTime || info.connectedTime, connectedTime: info.connectedTime, hangupAt: info.hangupAt || 0, durationSec: 0, name: name, av: info.av || '', type: info.type === 'video' ? 'video' : 'voice', mic: info.mic !== false && info.mic !== 0 && info.mic !== '0', cam: info.cam === true || info.cam === 1 || info.cam === '1' };
+currentCall = { cid: cid, direction: dir, status: 'connected', startTime: info.startTime || info.connectedTime, connectedTime: info.connectedTime, hangupAt: info.hangupAt || 0, durationSec: 0, name: name, av: info.av || '', type: info.type === 'video' ? 'video' : 'voice', mic: info.mic !== false && info.mic !== 0 && info.mic !== '0', cam: (info.type === 'video') && (info.cam === true || info.cam === 1 || info.cam === '1') };
 shownAv = null; shownName = null; shownUserAv = null;
 if (callMiniEnabled()) {
 if (mask) mask.hidden = true;

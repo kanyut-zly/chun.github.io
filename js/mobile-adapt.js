@@ -73,7 +73,16 @@ m.setAttribute('content', IOS_VP_A);
 } catch (e) {}
 }
 document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
-document.addEventListener('dblclick', function (e) { e.preventDefault(); });
+/* 私人七改补丁·电脑粘贴修：原来这里无差别拦所有 dblclick，电脑上双击选词、双击选中一个词
+   换词全都不生效（手机上双击缩放已由 touch-action/viewport 管住，不需要这一下）。
+   现在只在「非输入区」拦：输入框、聊天输入栏、可编辑区域一律放行浏览器的默认双击选词。 */
+document.addEventListener('dblclick', function (e) {
+  try {
+    var t = e.target;
+    if (t && t.closest && t.closest('input,textarea,select,[contenteditable],.ce-box,.chat-input')) return;
+  } catch (err) {}
+  e.preventDefault();
+});
 const SELECTION_EDITABLE_SEL = 'input,textarea,select,[contenteditable],.ce-box';
 function reapDeadSelection() {
 let s = null;
@@ -95,8 +104,19 @@ return true;
 }
 window.__mochiReapSelection = reapDeadSelection;   // 只读探针（诊断/verify 断言入口）
 function reapSoon() { try { reapDeadSelection(); } catch (e) {} }
-document.addEventListener('pointerdown', reapSoon, true);
-document.addEventListener('touchstart', reapSoon, true);
+/* #1812（私人七改补丁·电脑粘贴修）：reapSoon 原本挂在 pointerdown 捕获阶段，
+   电脑上一按下鼠标就把选区清掉——双击选不中词、右键菜单里「粘贴 / 复制」是灰的。
+   现在按下鼠标只在「点到非输入区」时才清；输入框里按鼠标一律放行，让浏览器自己做选区。 */
+function reapOnPointer(ev) {
+try {
+var t = ev && ev.target;
+var inField = !!(t && t.closest && t.closest(SELECTION_EDITABLE_SEL));
+if (inField) return;
+} catch (e) {}
+reapSoon();
+}
+document.addEventListener('pointerdown', reapOnPointer, true);
+document.addEventListener('touchstart', reapOnPointer, true);
 document.addEventListener('selectionchange', reapSoon);
 document.addEventListener('visibilitychange', reapSoon);
 var ceInited = false;
@@ -130,9 +150,13 @@ ceInited = true;
 }
 function ceConvert(inp) {
 if (!inp || inp.dataset.ceDone || inp.readOnly) return;
+// 标了 data-no-ce 的输入框保持原生：语音抽屉里的 Key / 接口地址这类
+// 需要系统键盘正常弹出、密码框也不能被换成 contenteditable。
+if (inp.dataset && inp.dataset.noCe) return;
 var t = inp.type;
 if (t === 'checkbox' || t === 'range' || t === 'file' || t === 'color' || t === 'hidden' ||
-t === 'date' || t === 'time' || t === 'datetime-local' || t === 'month' || t === 'week') return;
+t === 'date' || t === 'time' || t === 'datetime-local' || t === 'month' || t === 'week' ||
+t === 'password') return;
 var preVal = inp.getAttribute('value');
 if (preVal === null && inp.value !== undefined) preVal = inp.value;
 inp.dataset.ceDone = '1';
@@ -143,11 +167,44 @@ var box = document.createElement('div');
 box.className = 'ce-box ' + origClass;
 box.setAttribute('contenteditable', 'true');
 box.setAttribute('spellcheck', 'false');
-box.dataset.for = inp.id || '';
+/* #1810（私人七改补丁）：假框本来没有 id，全站 180 个输入框对外只剩一个「无 id 的 div」。
+   结果所有按 id 找输入框的逻辑（插入光标、聚焦、光标位置、粘贴定位）全都落空，
+   表现为「电脑上粘不上 / 输入时跳一下」。这里让假框与原生框共用同一个 id，
+   原生框留 data-ce-id 备份、删除自己的 id。 */
+try {
+if (inp.id) {
+inp.dataset.ceId = inp.id;
+box.id = inp.id;
+inp.removeAttribute('id');
+}
+} catch (e) {}
+/* 属性同步：原生框的 maxlength / placeholder / inputmode / disabled 变了，假框跟着变 */
+function syncCeAttrs() {
+try {
+var ml = inp.getAttribute('maxlength');
+if (ml) box.setAttribute('maxlength', ml); else box.removeAttribute('maxlength');
+var phNow = inp.getAttribute('placeholder') || '';
+if (phNow) box.setAttribute('data-ph', phNow); else box.removeAttribute('data-ph');
+var im = inp.getAttribute('inputmode');
+if (im) box.setAttribute('inputmode', im); else box.removeAttribute('inputmode');
+box.toggleAttribute('contenteditable', !inp.disabled);
+box.style.opacity = inp.disabled ? '0.6' : '';
+} catch (e) {}
+}
+box.dataset.for = inp.id || inp.dataset.ceId || '';
 var inpMode = inp.getAttribute('inputmode');
 if (inpMode) box.setAttribute('inputmode', inpMode);
 var ph = inp.getAttribute('placeholder') || '';
 if (ph) box.setAttribute('data-ph', ph);
+syncCeAttrs();
+/* 可选中：桌面设备上必须能双击选词、拖选、Ctrl+C/V。CSS 里全局没有禁，这里显式写死一层，
+   免得将来某个父级 user-select:none 把它带下去。 */
+box.style.setProperty('-webkit-user-select', 'text');
+box.style.setProperty('user-select', 'text');
+try {
+var attrMo = new MutationObserver(syncCeAttrs);
+attrMo.observe(inp, { attributes: true, attributeFilter: ['maxlength', 'placeholder', 'inputmode', 'disabled'] });
+} catch (e) {}
 if (inp.tagName === 'TEXTAREA') {
 var rows = parseInt(inp.getAttribute('rows'), 10) || 3;
 box.style.minHeight = Math.max(48, Math.round(rows * 1.5 * 16)) + 'px';
@@ -214,6 +271,68 @@ if (e.key === 'Enter') e.preventDefault();
 inp.__ceBox = box;
 box.__ceInp = inp;
 try { inp.parentNode.insertBefore(box, inp); } catch (e) {}
+/* 共用 id 之后，getElementById 拿到的是假框：定义 isContentEditable / readOnly /
+   selectionStart 这几个「像不像一个活输入框」的探针，让判断焦点的逻辑照常成立。 */
+try {
+Object.defineProperty(inp, 'isContentEditable', {
+get: function () { return document.activeElement === box; },
+configurable: true
+});
+Object.defineProperty(inp, 'selectionStart', {
+get: function () {
+try {
+var s = window.getSelection();
+if (!s || !s.rangeCount) return 0;
+var rg = s.getRangeAt(0);
+if (!box.contains(rg.startContainer)) return 0;
+var pre = document.createRange();
+pre.selectNodeContents(box);
+pre.setEnd(rg.startContainer, rg.startOffset);
+return pre.toString().length;
+} catch (e) { return 0; }
+},
+set: function (n) {
+try {
+var s = window.getSelection();
+if (!s) return;
+var rg = document.createRange();
+rg.selectNodeContents(box);
+rg.collapse(false);
+s.removeAllRanges();
+s.addRange(rg);
+} catch (e) {}
+},
+configurable: true
+});
+Object.defineProperty(inp, 'selectionEnd', {
+get: function () { return inp.selectionStart; },
+configurable: true
+});
+/* 光标区间控制（聚焦到指定位置），很多输入框逻辑会调用它 */
+inp.setSelectionRange = function (start, end) {
+try {
+var off = Math.max(0, Math.min(parseInt(start, 10) || 0, (box.textContent || '').length));
+var s = window.getSelection();
+if (!s) return;
+var rg = document.createRange();
+var walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, null);
+var count = 0, node = null, done = false;
+while ((node = walker.nextNode())) {
+var len = node.nodeValue.length;
+if (count + len >= off) {
+rg.setStart(node, off - count);
+rg.collapse(true);
+done = true;
+break;
+}
+count += len;
+}
+if (!done) { rg.selectNodeContents(box); rg.collapse(false); }
+s.removeAllRanges();
+s.addRange(rg);
+} catch (e) {}
+};
+} catch (e) {}
 Object.defineProperty(inp, 'value', {
 get: function () {
 try {
@@ -301,6 +420,18 @@ if (isMulti) {
 try { box.textContent = s; return; } catch (e) {}
 }
 box.textContent = s;
+/* 程序把值写进输入框（搜索词回填、自动补全等）时，沿用原生 input 框的行为把光标放到末尾，
+   否则用户接着打字会插到最前面。只在框里有焦点时才动光标，避免抢走别的输入。 */
+try {
+if (box.textContent && document.activeElement === box) {
+var _rg = document.createRange();
+_rg.selectNodeContents(box);
+_rg.collapse(false);
+var _sel = window.getSelection();
+_sel.removeAllRanges();
+_sel.addRange(_rg);
+}
+} catch (e) {}
 },
 configurable: true
 });
@@ -319,6 +450,68 @@ configurable: true
 var origFocus = inp.focus, origBlur = inp.blur;
 inp.focus = function () { try { box.focus(); } catch (e) {} };
 inp.blur = function () { try { box.blur(); } catch (e) {} };
+/* 粘贴清洗（#1811）：电脑上粘贴时若带换行，单行输入框会被塞进一大堆文字，
+   光标也乱了——表现为「粘不上」。单行框统一把换行压成空格；number 类再剔掉非数字。 */
+try {
+box.addEventListener('paste', function (e) {
+try {
+var cd = e.clipboardData || window.clipboardData;
+if (!cd) return;
+var txt = (cd.getData('text/plain') || cd.getData('text') || '');
+if (!txt) return;
+e.preventDefault();
+var t2 = isMulti ? txt.replace(/\r\n?/g, '\n') : txt.replace(/[\r\n]+/g, ' ').trim();
+if (inp.type === 'number') {
+t2 = t2.replace(/[^0-9.\-]/g, '');
+if (t2.indexOf('.') > 0) t2 = t2.slice(0, t2.indexOf('.') + 1) + t2.slice(t2.indexOf('.') + 1).replace(/\./g, '');
+}
+var maxLen = parseInt(inp.getAttribute('maxlength'), 10) || 0;
+if (maxLen > 0) {
+// 上限按「粘完之后」的总长度算：选中会被替换，未选中是插入
+var curAll = box.textContent || '';
+var selLen = 0;
+try {
+var _s0 = window.getSelection();
+if (_s0 && _s0.rangeCount && box.contains(_s0.getRangeAt(0).commonAncestorContainer)) selLen = _s0.getRangeAt(0).toString().length;
+} catch (e4) {}
+var room = Math.max(0, maxLen - (curAll.length - selLen));
+t2 = t2.slice(0, room);
+}
+if (!t2) return;
+/* #1814（私人七改补丁·电脑粘贴修）：以前 execCommand 失败时用 textContent = 原内容 + 剪贴板，
+   等于永远追加到末尾——在有选区（想替换）或者光标在中间时粘出来位置全错，看着就像「粘不上 / 粘乱了」。
+   现在按真实光标位置插入：有选区就替换选区，没选区就插在光标处，光标不在框里才退回追加。 */
+var done = false;
+try {
+if (document.activeElement === box) {
+done = !!document.execCommand('insertText', false, t2);
+}
+} catch (e2) { done = false; }
+if (!done) {
+try {
+var s = window.getSelection();
+var rg = null;
+if (s && s.rangeCount) {
+var r0 = s.getRangeAt(0);
+if (box.contains(r0.commonAncestorContainer)) rg = r0;
+}
+if (rg) {
+rg.deleteContents();
+var tn = document.createTextNode(t2);
+rg.insertNode(tn);
+rg.setStartAfter(tn);
+rg.collapse(true);
+s.removeAllRanges();
+s.addRange(rg);
+} else {
+box.textContent = (box.textContent || '') + t2;
+}
+box.dispatchEvent(new Event('input', { bubbles: true }));
+} catch (e5) {}
+}
+} catch (e3) {}
+});
+} catch (e) {}
 ['input', 'change', 'keydown', 'keyup', 'click', 'compositionstart', 'compositionend'].forEach(function (ev) {
 box.addEventListener(ev, function (e) {
 var clone = new Event(ev, { bubbles: true, cancelable: true });
@@ -381,9 +574,11 @@ if (t.__ceBox) { try { t.__ceBox.focus(); } catch (err) {} }
 if (!isIOS) {
 function ceNeedsConv(t) {
 if (!t || t.dataset.ceDone || t.__ceBox) return false;
+if (t.dataset && t.dataset.noCe) return false;
 var ty = t.type;
 return !(ty === 'checkbox' || ty === 'range' || ty === 'file' || ty === 'color' || ty === 'hidden' ||
-ty === 'date' || ty === 'time' || ty === 'datetime-local' || ty === 'month' || ty === 'week');
+ty === 'date' || ty === 'time' || ty === 'datetime-local' || ty === 'month' || ty === 'week' ||
+ty === 'password');
 }
 var _origInpFocus = HTMLInputElement.prototype.focus;
 HTMLInputElement.prototype.focus = function () {
