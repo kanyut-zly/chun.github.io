@@ -13780,6 +13780,10 @@ const quoteEl = document.getElementById('chat-draft-quote');
 let draftImgs = []; // 待发送图片（表情包/图片 dataURL）
 /* 私人三改：记下每张草稿图是不是「表情包」，发送时贴纸单独成条、排在文字下面 */
 let draftStickers = new Set();
+/* 私人八改：连发队列要提前声明——连发小窗挂在 .chat-draft 里面，
+   renderDraft 判断「草稿区要不要显示」时必须能读到队列长度，否则只打文字时
+   队列明明有内容，父层 .chat-draft 却因为「没图、没引用」被隐藏，小窗跟着一起消失。 */
+let joinQueue = []; // { text, imgs: [src...], stickers: [src...] }
 try {
   /* 表情面板点表情包 → 先停进草稿区（不直接发出） */
   window.chatDraftAddSticker = function (src) {
@@ -13825,7 +13829,8 @@ quoteEl.appendChild(bar);
 function renderDraft() {
 if (!draftEl || !draftItems) return;
 renderQuoteBar();
-draftEl.hidden = !draftImgs.length && !lastQuote;
+/* 私人八改：连发队列非空时，草稿区必须保持显示（连发小窗是它的子节点） */
+draftEl.hidden = !draftImgs.length && !lastQuote && !joinQueue.length;
 draftItems.innerHTML = '';
 draftImgs.forEach((src, i) => {
 const it = document.createElement('div');
@@ -14025,7 +14030,6 @@ send.addEventListener('mousedown', (e) => { e.preventDefault(); });
 send.addEventListener('click', () => { addMsg(readSendText()); try { input.focus(); } catch (e) {} });
 }
 /* ---------- 私人三改：连发（好几句话 + 图片 + 表情包分条发出） ---------- */
-let joinQueue = []; // { text, imgs: [src...], stickers: [src...] }
 let joinDragMode = false; // 拖动排序模式（长按菜单里进）
 const joinBar = document.getElementById('chat-join-bar');
 const joinItemsEl = document.getElementById('chat-join-items');
@@ -14048,6 +14052,8 @@ function joinSaveRow() {
 }
 function renderJoinBar() {
   if (!joinBar) return;
+  /* 私人八改：队列是草稿区的子节点，队列增删后同步父层显隐 */
+  if (draftEl) draftEl.hidden = !draftImgs.length && !lastQuote && !joinQueue.length;
   joinBar.hidden = !joinQueue.length;
   joinBar.classList.toggle('join-drag-mode', !!joinDragMode);
   const joinDoneBtn = document.getElementById('chat-join-done');

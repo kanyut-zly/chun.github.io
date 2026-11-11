@@ -72,6 +72,9 @@ if (r.indexOf('splash-seen:') === 0) return true;
 if (r.indexOf('reply-gc-') === 0) return true;
 if (r.indexOf('music-file:') === 0) return true;
 if (r.indexOf('font-blob-') === 0) return true;
+/* 私人八改：系统字卡覆盖表是「整台设备共用」的根键，不能被下面的一次性迁移
+   搬进当前桌面（搬走后换个桌面就读不到，看起来像改完没保存）。 */
+if (r.indexOf('dc-preset-') === 0) return true;
 if (r.indexOf('narc-') === 0) return true;
 if (r.indexOf('myarc') === 0) return true;
 if (r.indexOf('screen-adj-') === 0) return true;

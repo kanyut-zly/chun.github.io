@@ -273,6 +273,7 @@
   }
   function ghMsg(e) {
     if (!e) return '未知错误';
+    if (isEmptyRepo(e)) return '仓库还是空的（还没有任何提交）。正常点「备份到云端」就会自动建好分支并写进去；如果一直停在这句，检查「用户名/仓库名」是不是填成了另一个空仓库';
     if (e.status === 401) return 'Token 不对或已过期（401）：重新生成一个有 Contents 读写权限的 Token';
     if (e.status === 403) return '没有权限或被限流（403）：确认 Token 对该仓库有 Contents 读写权限';
     if (e.status === 404) return '找不到仓库或分支（404）：检查「用户名/仓库名」、分支名，以及 Token 是否有该仓库的权限';
@@ -280,6 +281,12 @@
     if (e.status === 422) return '提交被拒绝（422）：分支名或路径可能不合法';
     if (e.status >= 500) return 'GitHub 那边暂时出错（' + e.status + '），过会儿再试';
     return (e.message || '未知错误') + (e.status ? '（' + e.status + '）' : '');
+  }
+
+  /* 空仓库：GitHub 对「一个 commit 都没有」的仓库，取分支头会返回 409 + "Git Repository is empty."。
+     这不是冲突，第一次 PUT 内容时 GitHub 自己会把首个提交和分支建出来。 */
+  function isEmptyRepo(e) {
+    return !!(e && e.status === 409 && /empty/i.test(String(e.message || '')));
   }
 
   /* ===== 测试连接 ===== */
@@ -294,7 +301,15 @@
     if (repo && (repo.permissions && repo.permissions.push === false)) {
       throw new Error('这个 Token 对仓库「' + repo.full_name + '」只有读权限，需要 Contents: Read and write');
     }
-    const ref = await gh(c, '/git/ref/heads/' + encodeURIComponent(c.branch));
+    let ref = null;
+    try {
+      ref = await gh(c, '/git/ref/heads/' + encodeURIComponent(c.branch));
+    } catch (e) {
+      /* 空仓库不是错：第一次备份会自动建分支 */
+      if (isEmptyRepo(e)) return { repo: repo && repo.full_name, branch: c.branch, commit: null, empty: true };
+      if (e.status === 404) throw new Error('仓库里还没有「' + c.branch + '」这个分支。第一次「备份到云端」会自动建好；如果仓库里已有别的分支，把「分支」改成那个名字');
+      throw e;
+    }
     return { repo: repo && repo.full_name, branch: c.branch, commit: ref && ref.object && ref.object.sha };
   }
 
@@ -343,10 +358,13 @@
     try {
       await gh(c, '/git/ref/heads/' + encodeURIComponent(c.branch));
     } catch (e) {
-      if (e.status === 404) {
+      if (isEmptyRepo(e)) {
+        /* 空仓库：一个 commit 都没有。PUT 内容时 GitHub 会自己建首个提交 + 分支，直接往下走 */
+      } else if (e.status === 404) {
         throw new Error('分支「' + c.branch + '」在仓库里还不存在。去 GitHub 仓库首页点一下「Add a README file」提交一次（或把这里的「分支」改成你实际用的分支名）再备份');
+      } else {
+        throw e;
       }
-      throw e;
     }
 
     let lastErr = null;
@@ -356,8 +374,14 @@
         const cur = await gh(c, '/contents/' + encodeURI(filePath) + '?ref=' + encodeURIComponent(c.branch));
         if (cur && !Array.isArray(cur) && cur.sha) sha = cur.sha;
       } catch (e) {
-        if (e.status === 409 || e.status >= 500) { lastErr = e; await new Promise(function (r) { setTimeout(r, 400 + attempt * 600); }); continue; }
-        if (e.status !== 404) throw e;   /* 404 = 文件还没备份过，正常 */
+        /* 空仓库的 409 也等于「这个文件还没备份过」，不能当冲突重试，否则永远传不上去 */
+        if (isEmptyRepo(e) || e.status === 404) {
+          /* 文件还没备份过，sha 留空 */
+        } else if (e.status === 409 || e.status >= 500) {
+          lastErr = e; await new Promise(function (r) { setTimeout(r, 400 + attempt * 600); }); continue;
+        } else {
+          throw e;
+        }
       }
       const body = { message: commitMsg, content: contentB64, branch: c.branch };
       if (sha) body.sha = sha;   /* 已有同名文件才带 sha；首次备份绝不能带 */
@@ -404,7 +428,7 @@
     try {
       data = await gh(c, '/contents/' + encodeURI(c.dir) + '?ref=' + encodeURIComponent(c.branch));
     } catch (e) {
-      if (e.status === 404) return [];
+      if (e.status === 404 || isEmptyRepo(e)) return [];
       throw e;
     }
     if (!Array.isArray(data)) return [];
@@ -561,8 +585,13 @@
       const c = readForm();
       setMsg('测试中…');
       const r = await test(c);
-      setMsg('✓ 连上了：' + r.repo + ' · ' + r.branch);
-      toast('连接正常');
+      if (r.empty) {
+        setMsg('✓ 连上了：' + r.repo + ' · 分支 ' + r.branch + '（仓库还是空的，第一次备份会自动建好）');
+        toast('连接正常（仓库还是空的，可以直接备份）');
+      } else {
+        setMsg('✓ 连上了：' + r.repo + ' · ' + r.branch);
+        toast('连接正常');
+      }
     } catch (e) {
       setMsg('✗ ' + ghMsg(e), true);
     } finally { setBusy(false); }

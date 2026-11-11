@@ -235,7 +235,10 @@
             signal: abortAfter(40000)
           });
         } catch (e) {
-          const err = new Error('连不上 Fish Audio（网络 / 域名不通），换一个接口地址或稍后再试');
+          const official = !String(host || '').trim() || /api\.fish\.audio/i.test(base);
+          const err = new Error(official
+            ? '连不上 Fish Audio：这个域名在国内常被 DNS 污染 / 直连超时，VPN 也可能只代理了别的 App。办法：①「接口地址」填中转（见设置里的说明）；②或改用 MiniMax'
+            : '连不上你的中转地址 ' + base + '：检查地址有没有写错、中转有没有返回 Access-Control-Allow-Origin: *（跨域头）');
           err.net = true; throw err;
         }
         if (!res.ok) {
@@ -602,9 +605,11 @@
                 '<div class="tv-fields">' +
                   field('API Key', KEY.FISH_KEY, '填 Fish Audio 的 API Key', '必填', { pass: true }) +
                   field('模型', KEY.FISH_MODEL, '如 speech-1.1', '点下面「拉取模型」可选') +
-                  field('接口地址', KEY.FISH_HOST, '留空＝官方 api.fish.audio', '不填就用官方，填了用你的') +
+                  field('接口地址', KEY.FISH_HOST, '留空＝官方 api.fish.audio', '国内直连不通时，填你自己的中转地址（见下方说明）') +
                   field('音色 ID（reference_id）', KEY.FISH_VOICE, '填任意一个公开 / 自己的音色 ID', '点下面「拉取音色名单」') +
                 '</div>' +
+                '<div class="rs-hint">⚠️ <b>国内网络连不上 Fish</b>：api.fish.audio 经常被 DNS 污染 / 直连超时（开 VPN 也可能只代理了别的 App，浏览器没走代理）。' +
+                  '两个办法：①上面「接口地址」填一个中转地址（仓库里带了 <code>fish-proxy/worker.js</code>，按里面的说明一键部署到 Cloudflare Worker，再把地址填进来）；②在顶上切回 <b>MiniMax</b>，国内直连就能用。</div>' +
                 '<div class="tv-acts">' +
                   '<button class="rs-act tv-btn" data-act="fish-models" type="button">拉取模型</button>' +
                   '<button class="rs-act tv-btn" data-act="fish-voices" type="button">拉取音色名单</button>' +

@@ -270,6 +270,31 @@ function dailyCardNo() {
     return 1;
   }
 }
+/* 「写给你的第 N 天的第 M 张日卡」：
+   N = 现实真实天数（从第一次打开本站那天算起，跨过的自然日都算，跳着用也会继续走）；
+   M = 收到过的日卡张数（真正打开过、看过卡的日子才 +1，同一天不重复加）。 */
+var DAILY_START_KEY = 'xy-home-v2:daily-card-start';
+function dailyRealDayNo() {
+  try {
+    var today = dayKey();
+    var start = '';
+    try { start = localStorage.getItem(DAILY_START_KEY) || ''; } catch (e0) { start = ''; }
+    if (!start) {
+      try {
+        var arr = JSON.parse(localStorage.getItem(DAILY_NO_KEY) || '[]');
+        if (Array.isArray(arr) && arr.length) start = String(arr[0] || '');
+      } catch (e1) {}
+    }
+    if (!start) start = today;
+    try { localStorage.setItem(DAILY_START_KEY, start); } catch (e2) {}
+    var a = new Date(String(start) + 'T00:00:00');
+    var b = new Date(String(today) + 'T00:00:00');
+    var n = Math.floor((b.getTime() - a.getTime()) / 86400000) + 1;
+    return (isFinite(n) && n > 0) ? n : 1;
+  } catch (e) {
+    return 1;
+  }
+}
 function greeting() {
   var h = new Date().getHours();
   if (h < 5) return '夜深了';
@@ -323,7 +348,7 @@ function fillDailyCard() {
   /* 私人七改补丁（2026-11-10）：以前这里写的是「第 dayOfYear() 张」，也就是「今年第几天」，
      11 月 10 日打开就显示第 314 张，用户只看了一天却被吓到。改成按真正记录过的天数来数：
      本地存一份「打开过的日期」清单，第一次用是第 1 张，之后每次新的一天 +1。 */
-  if (subject) subject.textContent = '写给你的第 ' + dailyCardNo() + ' 张每日卡';
+  if (subject) subject.textContent = '写给你的第 ' + dailyRealDayNo() + ' 天的第 ' + dailyCardNo() + ' 张日卡';
   if (face) face.textContent = tm && tm.e ? tm.e : '💜';
 
   if (meEmoji) meEmoji.textContent = mine && mine.e ? mine.e : '🫧';

@@ -185,23 +185,56 @@ const DATA = (window.DEFAULT_CARD_DATA) || { main: [], kaomoji: [], emoji: [] };
 const PRESET_EDIT_KEY = 'dc-preset-edits-v1';
 const PRESET_MOVE_KEY = 'dc-preset-moves-v1';
 const PRESET_DEL_KEY = 'dc-preset-dels-v1';
+const PRESET_GLOBAL_KEY = 'dc-preset-global-v1';
 const ORIG_PRESET = {};
 Object.keys(DATA).forEach(function (k) {
 if (k === 'dict' || k === 'dict_ext') return;
 if (Array.isArray(DATA[k])) ORIG_PRESET[k] = DATA[k].map(function (g) { return [g[0], (g[1] || []).slice()]; });
 });
-function presetReadMap(key) {
+/* 私人八改：系统字卡是「整台设备共用的一张列表」，以前改动却存在当前联系人自己的
+   存储里（activeStore 按桌面隔离）——在这个桌面改完，切到另一个桌面/联系人再打开
+   就还是原文，看起来像「确认了没保存」。这里统一改成写在 xy-home-v2 根存储里，
+   所有桌面共用；旧版按桌面存的覆盖表会在第一次读取时自动搬到新位置并清掉。 */
+function presetBaseStore() {
+try { return window.xyStore ? window.xyStore('xy-home-v2') : null; } catch (e) { return null; }
+}
+/* 旧版按桌面存的键要绕过 activeStore().remove —— default 桌面的 remove 会把根键一起删掉 */
+function presetLegacyStore() {
 try {
-const v = JSON.parse(ls.get(key) || '{}');
+const cid = window.__activeCid || 'default';
+return window.xyStore ? window.xyStore('xy-home-v2:' + cid) : null;
+} catch (e) { return null; }
+}
+function presetParseMap(raw) {
+try {
+const v = JSON.parse(raw || '{}');
 return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
 } catch (e) { return {}; }
 }
-function presetWriteMap(key, o) {
-try { ls.set(key, JSON.stringify(o || {})); } catch (e) {}
+function presetReadMap(key) {
+const base = presetBaseStore();
+const legacyStore = presetLegacyStore();
+let map = presetParseMap(base ? base.get(key) : null);
+let legacy = {};
+try { legacy = presetParseMap(legacyStore ? legacyStore.get(key) : null); } catch (e) { legacy = {}; }
+const migrated = base && base.get(PRESET_GLOBAL_KEY) === '1';
+/* 还没迁移过：把旧版按桌面存的表并进全局表（全局已有的值优先） */
+if (!migrated && Object.keys(legacy).length) {
+map = Object.assign({}, legacy, map);
+try { if (base) base.set(key, JSON.stringify(map)); } catch (e) {}
 }
-const presetEdits = presetReadMap(PRESET_EDIT_KEY);
-const presetMoves = presetReadMap(PRESET_MOVE_KEY);
-const presetDels = presetReadMap(PRESET_DEL_KEY);
+/* 旧键清掉，避免以后又被当成有效数据读回来 */
+if (Object.keys(legacy).length) { try { if (legacyStore) legacyStore.remove(key); } catch (e) {} }
+return map;
+}
+function presetWriteMap(key, o) {
+const s = JSON.stringify(o || {});
+try { const base = presetBaseStore(); if (base) base.set(key, s); } catch (e) {}
+}
+let presetEdits = presetReadMap(PRESET_EDIT_KEY);
+let presetMoves = presetReadMap(PRESET_MOVE_KEY);
+let presetDels = presetReadMap(PRESET_DEL_KEY);
+try { const _b = presetBaseStore(); if (_b) _b.set(PRESET_GLOBAL_KEY, '1'); } catch (e) {}
 const presetViews = [];
 function presetKey(cat, text) { return cat + '\u0001' + String(text); }
 function presetSplitKey(k) {
@@ -249,6 +282,21 @@ try { if (v && typeof v.render === 'function') v.render(); } catch (e) {}
 });
 try { if (window.__presetCountRefresh) window.__presetCountRefresh(); } catch (e) {}
 }
+/* 私人八改：切桌面 / 云恢复 / 自愈落库后重新读一遍覆盖表，避免内存里留着旧快照 */
+function presetReloadMaps() {
+try {
+presetEdits = presetReadMap(PRESET_EDIT_KEY);
+presetMoves = presetReadMap(PRESET_MOVE_KEY);
+presetDels = presetReadMap(PRESET_DEL_KEY);
+presetRebuild();
+presetRefreshAll();
+} catch (e) {}
+}
+try {
+['contact-switched', 'mochi-restore-done', 'mochi-wrj-heal'].forEach(function (ev) {
+document.addEventListener(ev, function () { setTimeout(presetReloadMaps, 60); });
+});
+} catch (e) {}
 function presetToast(msg) {
 try { if (typeof toast === 'function') toast(msg); } catch (e) {}
 }
@@ -261,7 +309,15 @@ else presetEdits[k] = v;
 presetWriteMap(PRESET_EDIT_KEY, presetEdits);
 presetRebuild();
 presetRefreshAll();
-presetToast(v && v !== orig ? '系统字卡已修改' : '已恢复这张的原始文字');
+/* 私人八改：确认后校验一次，避免「弹窗关了但列表还是原文」的假成功 */
+let landed = false;
+try {
+(DATA[cat] || []).forEach(function (g) {
+if (!landed && (g[1] || []).indexOf(v) >= 0) landed = true;
+});
+} catch (e) {}
+if (v && v !== orig && !landed) presetToast('没找到这张卡（可能刚被移动或删除），请重新打开字卡列表后再试');
+else presetToast(v && v !== orig ? '系统字卡已修改' : '已恢复这张的原始文字');
 }
 function presetMove(cat, text, target) {
 const orig = presetOriginalOf(cat, text);
@@ -321,7 +377,7 @@ presetSetEdit(cat, text, v);
 textarea: isLong,
 textareaRows: isLong ? 5 : 3,
 placeholder: '修改这句系统字卡；清空后确定＝恢复原文',
-staticText: '改动只保存在本机当前桌面，随时可以长按这张卡点「恢复这张的原始版本」，或在「系统预设字卡」页顶部一键全部恢复。'
+staticText: '改动保存在本机，所有桌面/联系人共用同一份系统字卡；随时可以长按这张卡点「恢复这张的原始版本」，或在「系统预设字卡」页顶部一键全部恢复。'
 });
 }
 function presetMoveDialog(cat, text) {
